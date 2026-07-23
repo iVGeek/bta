@@ -192,7 +192,14 @@ function drawSparkline(canvas, data, color, w, h) {
   ctx.stroke();
   // gradient fill
   const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, color.replace(")", ",.15)").replace("rgb", "rgba"));
+  let fillColor = color;
+  if (color.startsWith("#")) {
+    const r = parseInt(color.slice(1, 3), 16), g = parseInt(color.slice(3, 5), 16), b = parseInt(color.slice(5, 7), 16);
+    fillColor = `rgba(${r},${g},${b},.15)`;
+  } else {
+    fillColor = color.replace(")", ",.15)").replace("rgb", "rgba");
+  }
+  grad.addColorStop(0, fillColor);
   grad.addColorStop(1, "transparent");
   ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
   ctx.fillStyle = grad; ctx.fill();
@@ -227,6 +234,8 @@ function onWS(d) {
       lastCandleTime = d.candle.time;
     }
     document.getElementById("cPrice").textContent = fmtP(d.candle.close, curSym);
+    if (d.candle.atr !== undefined) document.getElementById("cAtr").textContent = fmtP(d.candle.atr, curSym);
+    if (d.candle.vwap !== undefined) document.getElementById("cVwap").textContent = fmtP(d.candle.vwap, curSym);
   }
   const m = d.metrics || {};
   document.getElementById("hBal").textContent = "$" + fmtN(d.balance);
@@ -258,6 +267,28 @@ function onWS(d) {
   renderTrades(d.trades || []);
   renderSignals(d.signals || []);
   updateAIPanel(d);
+  if (d.trial) {
+    trialActive = d.trial.active;
+    const tpEl = document.getElementById("trialPositions");
+    if (tpEl && d.trial.positions && d.trial.positions.length) {
+      tpEl.innerHTML = d.trial.positions.map(p => {
+        const pnlCls = p.pnl >= 0 ? "g" : "r";
+        return `<div class="pos">
+          <div class="pos-side ${p.side}">${p.side.toUpperCase()}</div>
+          <div style="flex:1"><b>${p.symbol}</b> @ ${fmtP(p.entry, p.symbol)}</div>
+          <div class="pos-pnl ${pnlCls}">${p.pnl >= 0 ? "+" : ""}$${fmtN(p.pnl)}</div>
+          <button onclick="closeTrialPos(${p.id})" style="background:transparent;border:1px solid var(--red);color:var(--red);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">X</button>
+        </div>`;
+      }).join("");
+    } else if (tpEl) {
+      tpEl.innerHTML = '<div class="empty" style="padding:12px;color:var(--text3)">No trial positions</div>';
+    }
+    if (d.trial.closed && d.trial.closed.length) {
+      for (const t of d.trial.closed) {
+        showNotif(`Trial closed ${t.symbol}: $${t.pnl}`, t.pnl >= 0 ? "green" : "red");
+      }
+    }
+  }
   if (d.market) {
     document.getElementById("aiRec").textContent = d.market.recommendation || "Analyzing...";
     renderOpportunities(d.market.top_opportunities || []);
@@ -323,7 +354,7 @@ function renderPositions(positions) {
     </div>`).join("");
 }
 
-async function closePos(id) { await fetch(`/api/close/${id}`, { method: "POST" }); }
+async function closePos(id) { try { await fetch(`/api/close/${id}`, { method: "POST" }); showNotif("Position closed", "green"); } catch (e) { showNotif("Close failed: " + e.message, "red"); } }
 
 function renderTrades(trades) {
   const el = document.getElementById("trList");
@@ -514,17 +545,30 @@ async function api(url, method = "POST") { try { await fetch(url, { method }); }
 function openModal() { document.getElementById("modalBg").classList.add("show"); }
 function closeModal() { document.getElementById("modalBg").classList.remove("show"); }
 
+function showNotif(msg, color = "blue") {
+  const n = document.createElement("div");
+  n.style.cssText = `position:fixed;top:20px;right:20px;z-index:99999;padding:12px 20px;border-radius:8px;color:#fff;font-size:13px;font-family:Inter,sans-serif;box-shadow:0 4px 20px rgba(0,0,0,.4);max-width:400px;opacity:1;transition:opacity .3s;`;
+  const colors = { green: "#16a34a", red: "#dc2626", yellow: "#ca8a04", blue: "#2563eb" };
+  n.style.background = colors[color] || colors.blue;
+  n.textContent = msg;
+  document.body.appendChild(n);
+  setTimeout(() => { n.style.opacity = "0"; setTimeout(() => n.remove(), 300); }, 3000);
+}
+
 async function saveCfg() {
-  await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-    risk_per_trade: parseFloat(document.getElementById("sRisk").value),
-    max_positions: parseInt(document.getElementById("sMaxPos").value),
-    sl_atr_mult: parseFloat(document.getElementById("sSL").value),
-    tp_atr_mult: parseFloat(document.getElementById("sTP").value),
-    score_threshold: parseInt(document.getElementById("sScore").value),
-    timeframe: document.getElementById("sTF").value,
-    selected_pairs: document.getElementById("sPairs").value.split(",").map(x => x.trim()),
-  })});
-  closeModal(); curTF = document.getElementById("sTF").value; loadChart(); loadTickers();
+  try {
+    await fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+      risk_per_trade: parseFloat(document.getElementById("sRisk").value),
+      max_positions: parseInt(document.getElementById("sMaxPos").value),
+      sl_atr_mult: parseFloat(document.getElementById("sSL").value),
+      tp_atr_mult: parseFloat(document.getElementById("sTP").value),
+      score_threshold: parseInt(document.getElementById("sScore").value),
+      timeframe: document.getElementById("sTF").value,
+      selected_pairs: document.getElementById("sPairs").value.split(",").map(x => x.trim()),
+    })});
+    closeModal(); curTF = document.getElementById("sTF").value; loadChart(); loadTickers();
+    showNotif("Configuration saved", "green");
+  } catch (e) { showNotif("Save failed: " + e.message, "red"); }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -581,7 +625,7 @@ function renderNews(items) {
   el.innerHTML = items.map(n => {
     const coins = (n.coins || []).map(c => `<span class="news-coin">${c}</span>`).join("");
     return `
-    <div class="news-item ${n.sentiment}" onclick="window.open('${n.url}','_blank')">
+    <div class="news-item ${n.sentiment}" onclick="${n.url ? `window.open('${escH(n.url)}','_blank')` : ''}">
       <div class="news-hdr">
         <div class="news-title">${escH(n.title)}</div>
         <span class="news-sent ${n.sentiment}">${n.sentiment.toUpperCase()}</span>
@@ -635,12 +679,10 @@ function renderHints(hints) {
 
 function selectHint(symbol, side, confidence) {
   curSym = symbol;
-  document.getElementById("symSearch").value = symbol;
   loadChart();
   loadTickers();
   loadOrderBook();
   loadAIAnalysis();
-  // Auto-select the trade tab and set side
   document.querySelector('[data-rp="trade"]').click();
 }
 
@@ -648,9 +690,9 @@ function selectHint(symbol, side, confidence) {
 function filterAsset(type) {
   assetFilter = type;
   document.querySelectorAll(".af-btn").forEach(b => b.classList.toggle("on", b.dataset.asset === type));
-  renderWatchlist();
-  renderHeatmap();
-  renderTickerTape();
+  renderWL();
+  renderHM();
+  renderTape();
 }
 
 // ── Trial Mode ────────────────────────────────────────────────────────────────
@@ -663,6 +705,20 @@ async function loadTrialStatus() {
     document.getElementById("trialStat").style.display = d.active ? "flex" : "none";
     document.getElementById("trialTradeBox").style.display = d.active ? "block" : "none";
     document.getElementById("hTrial").textContent = "$" + (d.balance / 1000).toFixed(0) + "K";
+    const tpEl = document.getElementById("trialPositions");
+    if (tpEl && d.positions && d.positions.length) {
+      tpEl.innerHTML = d.positions.map(p => {
+        const pnlCls = p.pnl >= 0 ? "g" : "r";
+        return `<div class="pos">
+          <div class="pos-side ${p.side}">${p.side.toUpperCase()}</div>
+          <div style="flex:1"><b>${p.symbol}</b> @ ${fmtP(p.entry, p.symbol)}</div>
+          <div class="pos-pnl ${pnlCls}">${p.pnl >= 0 ? "+" : ""}$${fmtN(p.pnl)}</div>
+          <button onclick="closeTrialPos(${p.id})" style="background:transparent;border:1px solid var(--red);color:var(--red);border-radius:4px;padding:2px 8px;cursor:pointer;font-size:11px">X</button>
+        </div>`;
+      }).join("");
+    } else if (tpEl) {
+      tpEl.innerHTML = '<div class="empty" style="padding:12px;color:var(--text3)">No trial positions</div>';
+    }
   } catch (e) {}
 }
 
@@ -680,6 +736,17 @@ async function toggleTrial() {
     document.getElementById("btnTrial").classList.add("on");
     document.getElementById("trialStat").style.display = "flex";
   }
+}
+
+async function closeTrialPos(id) {
+  try {
+    const r = await fetch(`/api/trial/close/${id}`, { method: "POST" });
+    const d = await r.json();
+    if (d.status === "closed") {
+      showNotif(`Closed ${d.trade?.symbol} — P&L: $${d.trade?.pnl}`, d.trade?.pnl >= 0 ? "green" : "red");
+      loadTrialStatus();
+    }
+  } catch (e) { showNotif("Close failed: " + e.message, "red"); }
 }
 
 async function trialTrade(side) {

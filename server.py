@@ -18,7 +18,7 @@ from pathlib import Path
 import ccxt
 import uvicorn
 import yfinance as yf
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -255,16 +255,17 @@ def adx(highs, lows, closes, length=14):
 
 
 def ichimoku(highs, lows, closes, tenkan=9, kijun=26, senkou_b=52):
-    def mid(data, period):
-        result = [0] * len(data)
-        for i in range(period-1, len(data)):
-            w = data[i-period+1:i+1]
-            result[i] = (max(w) + min(w)) / 2
+    def mid(h, l, period):
+        result = [0] * len(h)
+        for i in range(period-1, len(h)):
+            wh = h[i-period+1:i+1]
+            wl = l[i-period+1:i+1]
+            result[i] = (max(wh) + min(wl)) / 2
         return result
-    tenkan_sen = mid(highs, tenkan)
-    kijun_sen = mid(highs, kijun)
+    tenkan_sen = mid(highs, lows, tenkan)
+    kijun_sen = mid(highs, lows, kijun)
     senkou_a = [(t+k)/2 for t, k in zip(tenkan_sen, kijun_sen)]
-    senkou_b_line = mid(highs, senkou_b)
+    senkou_b_line = mid(highs, lows, senkou_b)
     return tenkan_sen, kijun_sen, senkou_a, senkou_b_line
 
 
@@ -533,15 +534,17 @@ class RiskManager:
         kelly = (wr * b - (1 - wr)) / b
         return max(0.01, min(fraction, kelly * fraction))
 
-    def get_status(self):
+    def get_status(self, current_equity=None):
         self._check_daily_reset()
+        eq = current_equity if current_equity is not None else self.peak_equity
+        dd_pct = round((self.peak_equity - eq) / self.peak_equity * 100, 2) if self.peak_equity > 0 else 0
         return {
             "daily_pnl": round(self.daily_pnl, 2),
             "daily_trades": self.daily_trades,
             "max_daily_loss": self.max_daily_loss,
             "max_daily_trades": self.max_daily_trades,
             "max_drawdown_pct": self.max_drawdown_pct,
-            "drawdown_pct": round((self.peak_equity - self.peak_equity) / self.peak_equity * 100, 2) if self.peak_equity > 0 else 0,
+            "drawdown_pct": dd_pct,
         }
 
 
@@ -1425,11 +1428,18 @@ def fetch_ohlcv(symbol, tf="15m", limit=250):
 def fetch_latest_candle(symbol, tf="15m"):
     try:
         ex = get_exchange()
-        raw = ex.fetch_ohlcv(symbol + ":USDT", tf, limit=1)
+        raw = ex.fetch_ohlcv(symbol + ":USDT", tf, limit=50)
         if raw:
-            c = raw[0]
+            c = raw[-1]
             candle = {"time": c[0]//1000, "open": c[1], "high": c[2],
                       "low": c[3], "close": c[4], "volume": c[5]}
+            if len(raw) >= 14:
+                highs = [x[2] for x in raw]
+                lows = [x[3] for x in raw]
+                closes = [x[4] for x in raw]
+                volumes = [x[5] for x in raw]
+                candle["atr"] = round(atr(highs, lows, closes, 14)[-1], 2)
+                candle["vwap"] = round(vwap(highs, lows, closes, volumes)[-1], 2)
             candle_cache[symbol] = candle
             return candle
     except Exception:
@@ -1556,7 +1566,7 @@ async def api_status():
         "trial_pnl": round(trial.equity - trial.initial_balance, 2),
         "trial_positions": len(trial.positions), "trial_trades": len(trial.trades),
         "stock_list": STOCK_LIST[:20],
-        "risk": risk_manager.get_status(),
+        "risk": risk_manager.get_status(paper.equity if paper else None),
         "trailing": {"enabled": trailing_manager.trailing_enabled,
                      "breakeven_trigger": trailing_manager.breakeven_trigger,
                      "trail_distance": trailing_manager.trail_distance},
@@ -1649,7 +1659,7 @@ async def api_patterns(symbol: str):
 
 @app.get("/api/risk/status")
 async def api_risk_status():
-    return risk_manager.get_status()
+    return risk_manager.get_status(paper.equity if paper else None)
 
 @app.get("/api/portfolio/analytics")
 async def api_portfolio_analytics():
@@ -1662,7 +1672,7 @@ async def api_trailing_status():
             "trail_distance": trailing_manager.trail_distance}
 
 @app.post("/api/trailing/update")
-async def api_trailing_update(cfg: dict):
+async def api_trailing_update(cfg: dict = Body(...)):
     if "breakeven_trigger" in cfg:
         trailing_manager.breakeven_trigger = float(cfg["breakeven_trigger"])
     if "trail_distance" in cfg:
@@ -1806,7 +1816,7 @@ async def api_trial_status():
         "equity": round(trial.equity, 2),
         "pnl": round(trial.equity - trial.initial_balance, 2),
         "pnl_pct": round((trial.equity - trial.initial_balance) / trial.initial_balance * 100, 2),
-        "positions": len(trial.positions), "trades": len(trial.trades),
+        "positions": trial.positions, "trades": len(trial.trades),
         "start_time": trial.start_time, "metrics": trial.get_metrics(),
         "asset_type": trial.asset_type,
     }
@@ -1822,7 +1832,7 @@ async def api_trial_reset():
     return {"status": "reset", "balance": trial.balance}
 
 @app.post("/api/trial/trade")
-async def api_trial_trade(order: dict):
+async def api_trial_trade(order: dict = Body(...)):
     symbol = order.get("symbol", "BTC/USDT")
     side = order.get("side", "buy")
     price = float(order.get("price", 0))
@@ -1877,12 +1887,12 @@ async def api_trial_close(position_id: int):
     return {"status": "not_found"}
 
 @app.post("/api/trial/asset-filter")
-async def api_trial_asset_filter(data: dict):
+async def api_trial_asset_filter(data: dict = Body(...)):
     trial.asset_type = data.get("asset_type", "all")
     return {"asset_type": trial.asset_type}
 
 @app.post("/api/settings")
-async def api_settings(s: dict):
+async def api_settings(s: dict = Body(...)):
     for key in ["risk_per_trade", "sl_atr_mult", "tp_atr_mult"]:
         if key in s: setattr(paper, key, float(s[key]))
     for key in ["max_positions", "score_threshold"]:
@@ -1892,7 +1902,7 @@ async def api_settings(s: dict):
     return {"status": "updated"}
 
 @app.post("/api/trade")
-async def api_trade(order: dict):
+async def api_trade(order: dict = Body(...)):
     symbol = order.get("symbol", "BTC/USDT")
     side = order.get("side", "buy")
     price = float(order.get("price", 0))
