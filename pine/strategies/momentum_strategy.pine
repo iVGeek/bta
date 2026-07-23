@@ -74,9 +74,7 @@ avgV  = ta.sma(volume, 20)
 vRatio = volume / avgV
 
 // ADX
-adxVal    = ta.adx(high, low, close, adxLen)
-diPlus    = ta.dmi(adxLen, adxLen).plus
-diMinus   = ta.dmi(adxLen, adxLen).minus
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
 adxRising = adxVal > adxVal[1]
 
 // Volume pressure index (cumulative buying vs selling pressure)

@@ -107,9 +107,7 @@ squeezeRelease = squeezeOn[1] and squeezeOff
 squeezeFilter  = useSqueezeFilter ? squeezeOff : true
 
 // ── Trend / Regime Filter ───────────────────────────────────
-adxVal    = ta.adx(high, low, close, adxLen)
-diPlus    = ta.dmi(adxLen, adxLen).plus
-diMinus   = ta.dmi(adxLen, adxLen).minus
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
 strongTrend = adxVal > adxTrendMin
 ranging     = adxVal < adxMax and not strongTrend
 
