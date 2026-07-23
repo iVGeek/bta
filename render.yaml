@@ -3,8 +3,8 @@
     name: bot-trading-ai
     runtime: python
     plan: free
-    buildCommand: cd dashboard && pip install -r requirements.txt
-    startCommand: cd dashboard && uvicorn server:app --host 0.0.0.0 --port $PORT
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
