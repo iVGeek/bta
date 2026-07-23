@@ -230,6 +230,397 @@ def supertrend(highs, lows, closes, atr_len=10, mult=3.0):
     return result
 
 
+# ── Advanced Indicators ──────────────────────────────────────────────────────
+
+def adx(highs, lows, closes, length=14):
+    plus_dm, minus_dm, tr_list = [0], [0], [0]
+    for i in range(1, len(closes)):
+        up = highs[i] - highs[i-1]
+        down = lows[i-1] - lows[i]
+        plus_dm.append(up if up > down and up > 0 else 0)
+        minus_dm.append(down if down > up and down > 0 else 0)
+        tr_list.append(max(highs[i]-lows[i], abs(highs[i]-closes[i-1]), abs(lows[i]-closes[i-1])))
+    atr14 = sma(tr14 := tr_list, length)
+    plus_di_raw = [0] * len(closes)
+    minus_di_raw = [0] * len(closes)
+    dx_vals = [0] * len(closes)
+    for i in range(length, len(closes)):
+        if atr14[i] > 0:
+            plus_di_raw[i] = (plus_dm[i] / atr14[i]) * 100
+            minus_di_raw[i] = (minus_dm[i] / atr14[i]) * 100
+        denom = plus_di_raw[i] + minus_di_raw[i]
+        dx_vals[i] = abs(plus_di_raw[i] - minus_di_raw[i]) / denom * 100 if denom > 0 else 0
+    adx_vals = sma(dx_vals, length)
+    return adx_vals, plus_di_raw, minus_di_raw
+
+
+def ichimoku(highs, lows, closes, tenkan=9, kijun=26, senkou_b=52):
+    def mid(data, period):
+        result = [0] * len(data)
+        for i in range(period-1, len(data)):
+            w = data[i-period+1:i+1]
+            result[i] = (max(w) + min(w)) / 2
+        return result
+    tenkan_sen = mid(highs, tenkan)
+    kijun_sen = mid(highs, kijun)
+    senkou_a = [(t+k)/2 for t, k in zip(tenkan_sen, kijun_sen)]
+    senkou_b_line = mid(highs, senkou_b)
+    return tenkan_sen, kijun_sen, senkou_a, senkou_b_line
+
+
+def pivot_points(highs, lows, closes):
+    pp = (highs[-1] + lows[-1] + closes[-1]) / 3
+    r1 = 2 * pp - lows[-1]
+    s1 = 2 * pp - highs[-1]
+    r2 = pp + (highs[-1] - lows[-1])
+    s2 = pp - (highs[-1] - lows[-1])
+    r3 = highs[-1] + 2 * (pp - lows[-1])
+    s3 = lows[-1] - 2 * (highs[-1] - pp)
+    return {"pp": round(pp, 4), "r1": round(r1, 4), "r2": round(r2, 4), "r3": round(r3, 4),
+            "s1": round(s1, 4), "s2": round(s2, 4), "s3": round(s3, 4)}
+
+
+def detect_patterns(ohlcv):
+    patterns = []
+    for i in range(2, min(len(ohlcv), 50)):
+        c = ohlcv[-i]
+        o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
+        body = abs(cl - o)
+        upper = h - max(o, cl)
+        lower = min(o, cl) - l
+        total_range = h - l if h != l else 0.0001
+        prev = ohlcv[-(i+1)]
+        pbody = abs(prev["close"] - prev["open"])
+
+        if body < total_range * 0.1 and total_range > 0:
+            patterns.append({"type": "doji", "bar": i, "signal": "indecision"})
+        if lower > body * 2 and upper < body * 0.3 and cl > o:
+            patterns.append({"type": "hammer", "bar": i, "signal": "bullish_reversal"})
+        if upper > body * 2 and lower < body * 0.3 and cl < o:
+            patterns.append({"type": "shooting_star", "bar": i, "signal": "bearish_reversal"})
+        if cl > o and prev["close"] < prev["open"] and o <= prev["close"] and cl >= prev["open"] and body > pbody * 1.2:
+            patterns.append({"type": "bullish_engulfing", "bar": i, "signal": "bullish_reversal"})
+        if cl < o and prev["close"] > prev["open"] and o >= prev["close"] and cl <= prev["open"] and body > pbody * 1.2:
+            patterns.append({"type": "bearish_engulfing", "bar": i, "signal": "bearish_reversal"})
+        if lower > body * 3 and upper < body * 0.1:
+            patterns.append({"type": "pin_bar_low", "bar": i, "signal": "bullish_reversal"})
+        if upper > body * 3 and lower < body * 0.1:
+            patterns.append({"type": "pin_bar_high", "bar": i, "signal": "bearish_reversal"})
+    return patterns[:10]
+
+
+def find_support_resistance(ohlcv, lookback=50):
+    if len(ohlcv) < 10:
+        return {"support": [], "resistance": []}
+    window = ohlcv[-lookback:] if len(ohlcv) >= lookback else ohlcv
+    highs_list = sorted([c["high"] for c in window], reverse=True)
+    lows_list = sorted([c["low"] for c in window])
+    clusters_s, clusters_r = [], []
+    price_range = highs_list[0] - lows_list[0] if highs_list[0] != lows_list[0] else 1
+    tolerance = price_range * 0.005
+
+    for p in lows_list[:15]:
+        nearby = [c for c in lows_list if abs(c - p) < tolerance]
+        if len(nearby) >= 2:
+            level = sum(nearby) / len(nearby)
+            if not any(abs(level - s) < tolerance for s in clusters_s):
+                clusters_s.append(round(level, 4))
+    for p in highs_list[:15]:
+        nearby = [c for c in highs_list if abs(c - p) < tolerance]
+        if len(nearby) >= 2:
+            level = sum(nearby) / len(nearby)
+            if not any(abs(level - r) < tolerance for r in clusters_r):
+                clusters_r.append(round(level, 4))
+
+    current = ohlcv[-1]["close"]
+    support = sorted([s for s in clusters_s if s < current], reverse=True)[:3]
+    resistance = sorted([r for r in clusters_r if r > current])[:3]
+    return {"support": support, "resistance": resistance}
+
+
+# ── Multi-Timeframe Confluence ────────────────────────────────────────────────
+
+def multi_tf_analysis(symbol):
+    if "/" not in symbol:
+        return {"confluence": "neutral", "score": 50, "timeframes": {}}
+    tfs = {"5m": None, "15m": None, "1h": None, "4h": None, "1d": None}
+    for tf in tfs:
+        try:
+            raw = fetch_ohlcv(symbol, tf, 250)
+            if raw and len(raw) >= 50:
+                tfs[tf] = compute_indicators(raw)
+        except Exception:
+            pass
+    bull_count = sum(1 for tf, ind in tfs.items() if ind and ind.get("trend") == "bullish")
+    bear_count = sum(1 for tf, ind in tfs.items() if ind and ind.get("trend") == "bearish")
+    total = sum(1 for v in tfs.values() if v)
+    if total == 0:
+        return {"confluence": "neutral", "score": 50, "timeframes": {}}
+    score = 50 + (bull_count - bear_count) / total * 50
+    confluence = "bullish" if score > 60 else "bearish" if score < 40 else "neutral"
+    tf_summary = {}
+    for tf, ind in tfs.items():
+        if ind:
+            tf_summary[tf] = {"trend": ind.get("trend", "neutral"), "rsi": ind.get("rsi", 50),
+                              "strength": ind.get("strength", 50)}
+    return {"confluence": confluence, "score": round(score), "bull_timeframes": bull_count,
+            "bear_timeframes": bear_count, "total_timeframes": total, "timeframes": tf_summary}
+
+
+# ── Backtester ────────────────────────────────────────────────────────────────
+
+def run_backtest(symbol, strategy="trend", tf="15m", limit=1000, risk_pct=1.0):
+    ohlcv = fetch_ohlcv(symbol, tf, limit)
+    if not ohlcv or len(ohlcv) < 100:
+        return {"error": "Insufficient data", "trades": [], "metrics": {}}
+    closes = [c["close"] for c in ohlcv]
+    highs = [c["high"] for c in ohlcv]
+    lows = [c["low"] for c in ohlcv]
+    e9 = ema(closes, 9)
+    e21 = ema(closes, 21)
+    e200 = ema(closes, 200)
+    rsi14 = rsi(closes, 14)
+    _, _, macd_h = macd(closes)
+    bb_b, bb_u, bb_l = bollinger(closes)
+    atr14 = atr(highs, lows, closes, 14)
+    balance = 10000.0
+    trades = []
+    pos = None
+
+    for i in range(100, len(ohlcv)):
+        price = closes[i]
+        a = atr14[i] if i < len(atr14) else price * 0.01
+
+        if pos:
+            if pos["side"] == "long":
+                pos["pnl"] = (price - pos["entry"]) * pos["amount"]
+                if price <= pos["sl"] or price >= pos["tp"]:
+                    balance += pos["pnl"]
+                    pos["exit"] = price
+                    pos["exit_time"] = ohlcv[i]["time"]
+                    trades.append(pos)
+                    pos = None
+            else:
+                pos["pnl"] = (pos["entry"] - price) * pos["amount"]
+                if price >= pos["sl"] or price <= pos["tp"]:
+                    balance += pos["pnl"]
+                    pos["exit"] = price
+                    pos["exit_time"] = ohlcv[i]["time"]
+                    trades.append(pos)
+                    pos = None
+        else:
+            signal = None
+            if strategy == "trend":
+                if e9[i] > e21[i] and price > e200[i] and macd_h[i] > 0 and rsi14[i] > 50:
+                    signal = "long"
+                elif e9[i] < e21[i] and price < e200[i] and macd_h[i] < 0 and rsi14[i] < 50:
+                    signal = "short"
+            elif strategy == "mean_reversion":
+                if price < bb_l[i] and rsi14[i] < 30:
+                    signal = "long"
+                elif price > bb_u[i] and rsi14[i] > 70:
+                    signal = "short"
+            elif strategy == "breakout":
+                if i >= 20:
+                    high_20 = max(closes[i-20:i])
+                    low_20 = min(closes[i-20:i])
+                    if price > high_20:
+                        signal = "long"
+                    elif price < low_20:
+                        signal = "short"
+
+            if signal and a > 0:
+                risk_amount = balance * (risk_pct / 100)
+                sl_dist = a * 1.5
+                tp_dist = a * 3.0
+                sl = price - sl_dist if signal == "long" else price + sl_dist
+                tp = price + tp_dist if signal == "long" else price - tp_dist
+                amount = risk_amount / sl_dist
+                pos = {"side": signal, "entry": price, "sl": sl, "tp": tp,
+                       "amount": amount, "entry_time": ohlcv[i]["time"], "pnl": 0}
+
+    if pos:
+        balance += pos["pnl"]
+        trades.append(pos)
+
+    return _calc_bt_metrics(trades, balance, 10000.0)
+
+
+def _calc_bt_metrics(trades, final_balance, initial):
+    if not trades:
+        return {"trades": [], "metrics": {"total_trades": 0, "win_rate": 0, "profit_factor": 0,
+                "total_pnl": 0, "total_pnl_pct": 0, "sharpe": 0, "sortino": 0, "max_drawdown": 0}}
+    wins = [t for t in trades if t.get("pnl", 0) > 0]
+    losses = [t for t in trades if t.get("pnl", 0) <= 0]
+    tw = sum(t["pnl"] for t in wins)
+    tl = abs(sum(t["pnl"] for t in losses))
+    wr = len(wins) / len(trades) * 100
+    pf = tw / tl if tl > 0 else 0
+    pnls = [t.get("pnl", 0) for t in trades]
+    avg_ret = sum(pnls) / len(pnls)
+    std_ret = math.sqrt(sum((p - avg_ret)**2 for p in pnls) / len(pnls)) if len(pnls) > 1 else 1
+    downside = [p for p in pnls if p < 0]
+    downside_std = math.sqrt(sum(p**2 for p in downside) / len(downside)) if downside else 1
+    sharpe = (avg_ret / std_ret * math.sqrt(252)) if std_ret > 0 else 0
+    sortino = (avg_ret / downside_std * math.sqrt(252)) if downside_std > 0 else 0
+    eq = [initial]
+    for p in pnls:
+        eq.append(eq[-1] + p)
+    peak = eq[0]; mdd = 0
+    for e in eq:
+        if e > peak: peak = e
+        mdd = max(mdd, (peak - e) / peak * 100)
+    return {
+        "trades": [{"side": t["side"], "entry": round(t["entry"], 2), "exit": round(t.get("exit", 0), 2),
+                     "pnl": round(t.get("pnl", 0), 2)} for t in trades],
+        "metrics": {
+            "total_trades": len(trades), "win_rate": round(wr, 1), "profit_factor": round(pf, 2),
+            "total_pnl": round(final_balance - initial, 2),
+            "total_pnl_pct": round((final_balance - initial) / initial * 100, 2),
+            "sharpe": round(sharpe, 2), "sortino": round(sortino, 2),
+            "max_drawdown": round(mdd, 2), "avg_trade": round(avg_ret, 2),
+            "best_trade": round(max(pnls), 2), "worst_trade": round(min(pnls), 2),
+            "avg_win": round(tw / len(wins), 2) if wins else 0,
+            "avg_loss": round(tl / len(losses), 2) if losses else 0,
+            "final_balance": round(final_balance, 2),
+        }
+    }
+
+
+# ── Advanced Risk Management ─────────────────────────────────────────────────
+
+class RiskManager:
+    def __init__(self):
+        self.daily_pnl = 0
+        self.daily_trades = 0
+        self.max_daily_loss = -500
+        self.max_daily_trades = 20
+        self.max_drawdown_pct = 15.0
+        self.peak_equity = 10000.0
+        self.last_reset = datetime.now(timezone.utc).date()
+
+    def _check_daily_reset(self):
+        today = datetime.now(timezone.utc).date()
+        if today != self.last_reset:
+            self.daily_pnl = 0
+            self.daily_trades = 0
+            self.last_reset = today
+
+    def can_trade(self, paper_engine):
+        self._check_daily_reset()
+        if self.daily_trades >= self.max_daily_trades:
+            return False, "Daily trade limit reached"
+        if self.daily_pnl <= self.max_daily_loss:
+            return False, "Daily loss limit hit"
+        current_eq = paper_engine.equity
+        if current_eq > self.peak_equity:
+            self.peak_equity = current_eq
+        drawdown = (self.peak_equity - current_eq) / self.peak_equity * 100
+        if drawdown >= self.max_drawdown_pct:
+            return False, f"Max drawdown {drawdown:.1f}% exceeded"
+        return True, "OK"
+
+    def record_trade(self, pnl):
+        self._check_daily_reset()
+        self.daily_pnl += pnl
+        self.daily_trades += 1
+
+    def kelly_size(self, win_rate, avg_win, avg_loss, fraction=0.25):
+        if avg_loss == 0 or win_rate == 0:
+            return fraction
+        wr = win_rate / 100
+        b = avg_win / avg_loss if avg_loss > 0 else 1
+        kelly = (wr * b - (1 - wr)) / b
+        return max(0.01, min(fraction, kelly * fraction))
+
+    def get_status(self):
+        self._check_daily_reset()
+        return {
+            "daily_pnl": round(self.daily_pnl, 2),
+            "daily_trades": self.daily_trades,
+            "max_daily_loss": self.max_daily_loss,
+            "max_daily_trades": self.max_daily_trades,
+            "max_drawdown_pct": self.max_drawdown_pct,
+            "drawdown_pct": round((self.peak_equity - self.peak_equity) / self.peak_equity * 100, 2) if self.peak_equity > 0 else 0,
+        }
+
+
+risk_manager = RiskManager()
+
+
+# ── Trailing Stop Manager ────────────────────────────────────────────────────
+
+class TrailingStopManager:
+    def __init__(self):
+        self.trailing_enabled = True
+        self.breakeven_trigger = 1.0  # ATR units
+        self.trail_distance = 1.5  # ATR units
+        self.partial_close_pct = 50  # close 50% at 2R
+
+    def update(self, pos, current_price, atr_val):
+        if not self.trailing_enabled or atr_val <= 0:
+            return
+        entry = pos.entry
+        if pos.side == "long":
+            profit = current_price - entry
+            if profit >= atr_val * self.breakeven_trigger and pos.sl < entry:
+                pos.sl = entry + atr_val * 0.05  # move to breakeven + small buffer
+            if profit >= atr_val * 2:
+                new_sl = current_price - atr_val * self.trail_distance
+                if new_sl > pos.sl:
+                    pos.sl = new_sl
+        else:
+            profit = entry - current_price
+            if profit >= atr_val * self.breakeven_trigger and pos.sl > entry:
+                pos.sl = entry - atr_val * 0.05
+            if profit >= atr_val * 2:
+                new_sl = current_price + atr_val * self.trail_distance
+                if new_sl < pos.sl:
+                    pos.sl = new_sl
+
+trailing_manager = TrailingStopManager()
+
+
+# ── Portfolio Analytics ───────────────────────────────────────────────────────
+
+def portfolio_analytics(trades):
+    if not trades:
+        return {"sharpe": 0, "sortino": 0, "calmar": 0, "avg_holding": 0,
+                "long_win_rate": 0, "short_win_rate": 0, "best_pair": "N/A", "worst_pair": "N/A"}
+    pnls = [t.get("pnl", 0) for t in trades]
+    if not pnls:
+        return {"sharpe": 0, "sortino": 0, "calmar": 0}
+    avg_ret = sum(pnls) / len(pnls)
+    std_ret = math.sqrt(sum((p - avg_ret)**2 for p in pnls) / len(pnls)) if len(pnls) > 1 else 1
+    downside = [p for p in pnls if p < 0]
+    downside_std = math.sqrt(sum(p**2 for p in downside) / len(downside)) if downside else 1
+    sharpe = (avg_ret / std_ret * math.sqrt(252)) if std_ret > 0 else 0
+    sortino = (avg_ret / downside_std * math.sqrt(252)) if downside_std > 0 else 0
+    eq = [10000]
+    for p in pnls:
+        eq.append(eq[-1] + p)
+    peak = eq[0]; mdd = 0
+    for e in eq:
+        if e > peak: peak = e
+        mdd = max(mdd, (peak - e) / peak * 100)
+    calmar = abs(avg_ret * 252) / (mdd / 100) if mdd > 0 else 0
+    longs = [t for t in trades if t.get("side") == "buy"]
+    shorts = [t for t in trades if t.get("side") == "sell"]
+    lwr = len([t for t in longs if t.get("pnl", 0) > 0]) / len(longs) * 100 if longs else 0
+    swr = len([t for t in shorts if t.get("pnl", 0) > 0]) / len(shorts) * 100 if shorts else 0
+    pair_pnl = {}
+    for t in trades:
+        s = t.get("symbol", "N/A")
+        pair_pnl[s] = pair_pnl.get(s, 0) + t.get("pnl", 0)
+    best_pair = max(pair_pnl, key=pair_pnl.get) if pair_pnl else "N/A"
+    worst_pair = min(pair_pnl, key=pair_pnl.get) if pair_pnl else "N/A"
+    return {"sharpe": round(sharpe, 2), "sortino": round(sortino, 2),
+            "calmar": round(calmar, 2), "avg_holding": 0,
+            "long_win_rate": round(lwr, 1), "short_win_rate": round(swr, 1),
+            "best_pair": best_pair, "worst_pair": worst_pair,
+            "max_drawdown": round(mdd, 2), "total_pnl": round(sum(pnls), 2)}
+
+
 # ── News Fetcher ──────────────────────────────────────────────────────────────
 
 news_cache = {"items": [], "fetched_at": 0}
@@ -481,6 +872,41 @@ class AIEngine:
         elif vol_24h < 1e7:
             score -= 5; reasons.append("Low volume risk")
 
+        adx_val = ind.get("adx", 50)
+        if adx_val > 25:
+            score += 8; reasons.append(f"Strong trend (ADX {adx_val:.0f})")
+        elif adx_val < 15:
+            score -= 5; reasons.append(f"Weak trend / ranging (ADX {adx_val:.0f})")
+
+        ich = {}
+        if ind.get("ichimoku_tenkan"):
+            price_above_cloud = price > max(ind.get("ichimoku_senkou_a", 0), ind.get("ichimoku_senkou_b", 0))
+            price_below_cloud = price < min(ind.get("ichimoku_senkou_a", 0), ind.get("ichimoku_senkou_b", 0))
+            if side == "long" and price_above_cloud:
+                score += 8; reasons.append("Above Ichimoku cloud (bullish)")
+            elif side == "short" and price_below_cloud:
+                score += 8; reasons.append("Below Ichimoku cloud (bearish)")
+            elif side == "long" and price_below_cloud:
+                score -= 5; reasons.append("Below Ichimoku cloud")
+
+        sr = ind.get("sr", {})
+        if price and sr:
+            for s in sr.get("support", []):
+                if abs(price - s) / price < 0.005:
+                    score += 8; reasons.append(f"Near support ${s:.2f}")
+            for r in sr.get("resistance", []):
+                if abs(price - r) / price < 0.005:
+                    score -= 3; reasons.append(f"Near resistance ${r:.2f}")
+
+        patterns = ind.get("patterns", [])
+        for p in patterns[:3]:
+            if p["bar"] > 0:
+                continue  # only care about recent patterns
+            if p["signal"] == "bullish_reversal" and side == "long":
+                score += 10; reasons.append(f"Bullish pattern: {p['type']}")
+            elif p["signal"] == "bearish_reversal" and side == "short":
+                score += 10; reasons.append(f"Bearish pattern: {p['type']}")
+
         score = max(0, min(100, score + 50))
         approved = score >= 60
         confidence = score
@@ -578,6 +1004,11 @@ class PaperPosition:
         self.amount = amount
         self.sl = sl
         self.tp = tp
+        self.trailing_sl = sl
+        self.breakeven_hit = False
+        self.partial_closed = False
+        self.highest_pnl = 0.0
+        self.lowest_pnl = 0.0
         self.current = entry_price
         self.pnl = 0.0
         self.pnl_pct = 0.0
@@ -585,8 +1016,9 @@ class PaperPosition:
         self.open_time = datetime.now(timezone.utc).isoformat()
         self.ai_score = ai_score
         self.status = "open"
+        self.atr_at_entry = 0
 
-    def update(self, current_price):
+    def update(self, current_price, atr_val=0):
         self.current = current_price
         if self.side == "long":
             self.pnl = (current_price - self.entry) * self.amount
@@ -597,6 +1029,9 @@ class PaperPosition:
             risk = self.sl - self.entry if self.sl else self.entry * 0.01
             self.rr = round((self.entry - current_price) / risk, 2) if risk > 0 else 0
         self.pnl_pct = round(self.pnl / (self.entry * self.amount) * 100, 2) if self.entry * self.amount > 0 else 0
+        self.highest_pnl = max(self.highest_pnl, self.pnl)
+        if atr_val > 0:
+            trailing_manager.update(self, current_price, atr_val)
 
     def should_close(self):
         if self.side == "long":
@@ -616,6 +1051,8 @@ class PaperPosition:
             "pnl": round(self.pnl, 2), "pnl_pct": round(self.pnl_pct, 2),
             "rr": self.rr, "open_time": self.open_time,
             "ai_score": self.ai_score, "status": self.status,
+            "breakeven_hit": self.breakeven_hit, "trailing_sl": round(self.trailing_sl, 2),
+            "highest_pnl": round(self.highest_pnl, 2),
         }
 
 
@@ -704,9 +1141,12 @@ class PaperEngine:
         for pos in self.positions[:]:
             t = tickers.get(pos.symbol)
             if t and t.get("price", 0) > 0:
-                pos.update(t["price"])
+                ind = self.indicators_cache.get(pos.symbol, {})
+                atr_val = ind.get("atr", pos.entry * 0.01)
+                pos.update(t["price"], atr_val)
                 close_reason = pos.should_close()
                 if close_reason:
+                    risk_manager.record_trade(pos.pnl)
                     trade = self.close_position(pos, close_reason)
                     closed.append(trade)
         return closed
@@ -717,7 +1157,8 @@ class PaperEngine:
             return {"total_trades": 0, "win_rate": 0, "profit_factor": 0, "max_drawdown": 0,
                     "avg_win": 0, "avg_loss": 0, "total_pnl": 0, "total_pnl_pct": 0,
                     "expectancy": 0, "best_trade": 0, "worst_trade": 0,
-                    "consecutive_wins": 0, "consecutive_losses": 0}
+                    "consecutive_wins": 0, "consecutive_losses": 0,
+                    "sharpe": 0, "sortino": 0, "calmar": 0}
         wins = [t for t in trades if t.get("pnl", 0) > 0]
         losses = [t for t in trades if t.get("pnl", 0) <= 0]
         tw = sum(t["pnl"] for t in wins) if wins else 0
@@ -737,6 +1178,13 @@ class PaperEngine:
             if t.get("pnl", 0) > 0: cw += 1; cl = 0; mcw = max(mcw, cw)
             else: cl += 1; cw = 0; mcl = max(mcl, cl)
         all_pnls = [t.get("pnl", 0) for t in trades]
+        avg_ret = sum(all_pnls) / len(all_pnls) if all_pnls else 0
+        std_ret = math.sqrt(sum((p - avg_ret)**2 for p in all_pnls) / len(all_pnls)) if len(all_pnls) > 1 else 1
+        down_side = [p for p in all_pnls if p < 0]
+        down_std = math.sqrt(sum(p**2 for p in down_side) / len(down_side)) if down_side else 1
+        sharpe = round((avg_ret / std_ret * math.sqrt(252)) if std_ret > 0 else 0, 2)
+        sortino = round((avg_ret / down_std * math.sqrt(252)) if down_std > 0 else 0, 2)
+        calmar = round(abs(avg_ret * 252) / (mdd / 100), 2) if mdd > 0 else 0
         return {
             "total_trades": len(trades), "win_rate": round(wr, 1),
             "profit_factor": round(pf, 2), "max_drawdown": round(mdd, 2),
@@ -747,6 +1195,7 @@ class PaperEngine:
             "best_trade": round(max(all_pnls), 2) if all_pnls else 0,
             "worst_trade": round(min(all_pnls), 2) if all_pnls else 0,
             "consecutive_wins": mcw, "consecutive_losses": mcl,
+            "sharpe": sharpe, "sortino": sortino, "calmar": calmar,
         }
 
 
@@ -1018,6 +1467,11 @@ def compute_indicators(ohlcv):
     vw = vwap(highs, lows, closes, volumes)
     obv_vals = obv(closes, volumes)
     st = supertrend(highs, lows, closes)
+    adx_vals, adx_plus_vals, adx_minus_vals = adx(highs, lows, closes)
+    ich_tenkan, ich_kijun, ich_senkou_a, ich_senkou_b = ichimoku(highs, lows, closes)
+    pivots = pivot_points(highs, lows, closes)
+    patterns = detect_patterns(ohlcv)
+    sr_levels = find_support_resistance(ohlcv)
 
     sigs = {"long": 0, "short": 0}
     if e9[-1] > e21[-1]: sigs["long"] += 1
@@ -1053,6 +1507,16 @@ def compute_indicators(ohlcv):
         "vwap": round(vw[-1], 2),
         "obv": obv_vals[-1],
         "supertrend": round(st[-1], 2),
+        "adx": round(adx_vals[-1], 1) if adx_vals else 50,
+        "adx_plus": round(adx_plus_vals[-1], 1) if adx_plus_vals else 50,
+        "adx_minus": round(adx_minus_vals[-1], 1) if adx_minus_vals else 50,
+        "ichimoku_tenkan": round(ich_tenkan[-1], 2),
+        "ichimoku_kijun": round(ich_kijun[-1], 2),
+        "ichimoku_senkou_a": round(ich_senkou_a[-1], 2),
+        "ichimoku_senkou_b": round(ich_senkou_b[-1], 2),
+        "pivots": pivots,
+        "patterns": patterns,
+        "sr": sr_levels,
         "signals": sigs, "trend": trend, "strength": round(strength),
         "ema9_s": downsamp(e9), "ema21_s": downsamp(e21), "ema200_s": downsamp(e200),
         "rsi_s": [{"time": ohlcv[i]["time"], "value": round(rsi14[i], 1)} for i in idx if i < len(rsi14)],
@@ -1092,6 +1556,10 @@ async def api_status():
         "trial_pnl": round(trial.equity - trial.initial_balance, 2),
         "trial_positions": len(trial.positions), "trial_trades": len(trial.trades),
         "stock_list": STOCK_LIST[:20],
+        "risk": risk_manager.get_status(),
+        "trailing": {"enabled": trailing_manager.trailing_enabled,
+                     "breakeven_trigger": trailing_manager.breakeven_trigger,
+                     "trail_distance": trailing_manager.trail_distance},
     }
 
 @app.get("/api/tickers")
@@ -1156,6 +1624,52 @@ async def api_news(limit: int = 30):
 async def api_news_sentiment():
     items = await asyncio.to_thread(fetch_news)
     return get_news_sentiment_summary(items)
+
+@app.get("/api/mtf/{symbol}")
+async def api_multi_tf(symbol: str):
+    sym = symbol.replace("-", "/")
+    return await asyncio.to_thread(multi_tf_analysis, sym)
+
+@app.get("/api/backtest/{symbol}")
+async def api_backtest(symbol: str, strategy: str = "trend", tf: str = "15m", limit: int = 1000, risk_pct: float = 1.0):
+    sym = symbol.replace("-", "/")
+    return await asyncio.to_thread(run_backtest, sym, strategy, tf, limit, risk_pct)
+
+@app.get("/api/sr/{symbol}")
+async def api_sr(symbol: str):
+    sym = symbol.replace("-", "/")
+    ohlcv = await asyncio.to_thread(fetch_ohlcv, sym, "15m", 250)
+    return find_support_resistance(ohlcv) if ohlcv else {"support": [], "resistance": []}
+
+@app.get("/api/patterns/{symbol}")
+async def api_patterns(symbol: str):
+    sym = symbol.replace("-", "/")
+    ohlcv = await asyncio.to_thread(fetch_ohlcv, sym, "15m", 100)
+    return detect_patterns(ohlcv) if ohlcv else []
+
+@app.get("/api/risk/status")
+async def api_risk_status():
+    return risk_manager.get_status()
+
+@app.get("/api/portfolio/analytics")
+async def api_portfolio_analytics():
+    return portfolio_analytics(paper.trades)
+
+@app.get("/api/trailing/status")
+async def api_trailing_status():
+    return {"enabled": trailing_manager.trailing_enabled,
+            "breakeven_trigger": trailing_manager.breakeven_trigger,
+            "trail_distance": trailing_manager.trail_distance}
+
+@app.post("/api/trailing/update")
+async def api_trailing_update(cfg: dict):
+    if "breakeven_trigger" in cfg:
+        trailing_manager.breakeven_trigger = float(cfg["breakeven_trigger"])
+    if "trail_distance" in cfg:
+        trailing_manager.trail_distance = float(cfg["trail_distance"])
+    if "enabled" in cfg:
+        trailing_manager.trailing_enabled = bool(cfg["enabled"])
+    return {"status": "updated"}
 
 @app.get("/api/hints")
 async def api_hints():
