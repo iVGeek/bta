@@ -1,6 +1,6 @@
 //@version=6
-// iVGeek Custom Indicators Library v1.0
-// Advanced indicators and market analysis tools
+// iVGeek Custom Indicators Library v3.0
+// Advanced indicators, Ichimoku, candlestick patterns, and market analysis
 // ============================================================
 library("iVGeek Indicators")
 
@@ -43,7 +43,7 @@ export fractalSR(float high, float low, int lookback) =>
 // @param low: low price
 // @returns: strength score 0-100
 export trendStrength(float close, float high, float low) =>
-    adxVal  = ta.adx(high, low, close, 14)
+    [_, _, adxVal] = ta.dmi(14, 14)
     ema20   = ta.ema(close, 20)
     ema50   = ta.ema(close, 50)
     emaSlope = (ema20 - ema20[5]) / ema20[5] * 100
@@ -159,3 +159,108 @@ export mtfConfluence(string symbol, string tf1, string tf2, string tf3) =>
     trend2 = request.security(symbol, tf2, close > ta.ema(close, 50))
     trend3 = request.security(symbol, tf3, close > ta.ema(close, 50))
     (trend1 ? 1 : 0) + (trend2 ? 1 : 0) + (trend3 ? 1 : 0)
+
+// === Ichimoku Cloud ===
+// Standard Ichimoku with Tenkan, Kijun, Senkou A/B, Chikou
+// @param high: high price
+// @param low: low price
+// @param close: close price
+// @returns: tuple (tenkan, kijun, senkouA, senkouB, chikou)
+export ichimokuCloud(float high, float low, float close) =>
+    tenkan  = (ta.highest(high, 9) + ta.lowest(low, 9)) / 2
+    kijun   = (ta.highest(high, 26) + ta.lowest(low, 26)) / 2
+    senkouA = (tenkan + kijun) / 2
+    senkouB = (ta.highest(high, 52) + ta.lowest(low, 52)) / 2
+    chikou  = close
+    [tenkan, kijun, senkouA, senkouB, chikou]
+
+// === Ichimoku Signal ===
+// Returns cloud direction and TK cross
+// @param high, low, close: price series
+// @returns: tuple (cloudBull: 1/-1/0, tkCross: 1/-1/0, aboveCloud: bool)
+export ichimokuSignal(float high, float low, float close) =>
+    tenkan  = (ta.highest(high, 9) + ta.lowest(low, 9)) / 2
+    kijun   = (ta.highest(high, 26) + ta.lowest(low, 26)) / 2
+    senkouA = (tenkan + kijun) / 2
+    senkouB = (ta.highest(high, 52) + ta.lowest(low, 52)) / 2
+    cloudTop  = math.max(senkouA, senkouB)
+    cloudBot  = math.min(senkouA, senkouB)
+    aboveCloud = close > cloudTop
+    belowCloud = close < cloudBot
+    cloudBull  = senkouA > senkouB ? 1 : senkouA < senkouB ? -1 : 0
+    tkCross    = tenkan > kijun and tenkan[1] <= kijun[1] ? 1 : tenkan < kijun and tenkan[1] >= kijun[1] ? -1 : 0
+    [cloudBull, tkCross, aboveCloud, belowCloud]
+
+// === Candlestick Pattern: Doji ===
+// @param open, high, low, close: OHLC
+// @returns: 1=bullish doji, -1=bearish doji, 0=none
+export patternDoji(float open, float high, float low, float close) =>
+    bodySize = math.abs(close - open)
+    barSize  = high - low
+    barSize > 0 ? (bodySize / barSize < 0.1 ? (close > open ? 1 : -1) : 0) : 0
+
+// === Candlestick Pattern: Hammer / Inverted Hammer ===
+// Bullish hammer: small body at top, long lower wick (2x+ body)
+// Bearish inverted hammer: small body at bottom, long upper wick
+// @param open, high, low, close: OHLC
+// @returns: 1=bullish hammer, -1=shooting star, 0=none
+export patternHammer(float open, float high, float low, float close) =>
+    bodySize = math.abs(close - open)
+    upperWick = high - math.max(open, close)
+    lowerWick = math.min(open, close) - low
+    barSize   = high - low
+    barSize > 0 and bodySize > 0 ? (
+        lowerWick >= bodySize * 2 and upperWick <= bodySize * 0.5 and close > open ? 1 :
+        upperWick >= bodySize * 2 and lowerWick <= bodySize * 0.5 and close < open ? -1 : 0
+    ) : 0
+
+// === Candlestick Pattern: Bullish / Bearish Engulfing ===
+// @param open1, close1, open0, close0: current and previous OHLC
+// @param high0, low0: current bar
+// @returns: 1=bullish engulfing, -1=bearish engulfing, 0=none
+export patternEngulfing(float open1, float close1, float open0, float close0, float high0, float low0) =>
+    prevBody = math.abs(close1 - open1)
+    currBody = math.abs(close0 - open0)
+    isBullEngulf = close1 < open1 and close0 > open0 and open0 <= close1 and close0 >= open1 and currBody > prevBody
+    isBearEngulf = close1 > open1 and close0 < open0 and open0 >= close1 and close0 <= open1 and currBody > prevBody
+    isBullEngulf ? 1 : isBearEngulf ? -1 : 0
+
+// === Candlestick Pattern: Pin Bar ===
+// Long wick rejection (wick > 2x body, in direction of rejection)
+// @param open, high, low, close: OHLC
+// @returns: 1=bullish pin (bullish rejection), -1=bearish pin (bearish rejection), 0=none
+export patternPinBar(float open, float high, float low, float close) =>
+    bodySize = math.abs(close - open)
+    upperWick = high - math.max(open, close)
+    lowerWick = math.min(open, close) - low
+    barSize   = high - low
+    barSize > 0 and bodySize > 0 ? (
+        lowerWick > bodySize * 2.5 and lowerWick > upperWick * 2 ? 1 :
+        upperWick > bodySize * 2.5 and upperWick > lowerWick * 2 ? -1 : 0
+    ) : 0
+
+// === Pattern Score (Composite) ===
+// Scores all 5 patterns and returns composite signal
+// @param open1, high1, low1, close1: previous bar OHLC
+// @param open0, high0, low0, close0: current bar OHLC
+// @returns: tuple (bullScore, bearScore) each 0-3
+export patternScore(float open1, float high1, float low1, float close1, float open0, float high0, float low0, float close0) =>
+    bullScore = 0.0
+    bearScore = 0.0
+    // Doji (neutral — adds to both sides as uncertainty)
+    doji = patternDoji(open0, high0, low0, close0)
+    bullScore += doji == 1 ? 1.0 : 0.0
+    bearScore += doji == -1 ? 1.0 : 0.0
+    // Hammer / Shooting Star
+    hammer = patternHammer(open0, high0, low0, close0)
+    bullScore += hammer == 1 ? 1.0 : 0.0
+    bearScore += hammer == -1 ? 1.0 : 0.0
+    // Engulfing
+    engulf = patternEngulfing(open1, close1, open0, close0, high0, low0)
+    bullScore += engulf == 1 ? 1.0 : 0.0
+    bearScore += engulf == -1 ? 1.0 : 0.0
+    // Pin Bar
+    pin = patternPinBar(open0, high0, low0, close0)
+    bullScore += pin == 1 ? 1.0 : 0.0
+    bearScore += pin == -1 ? 1.0 : 0.0
+    [bullScore, bearScore]

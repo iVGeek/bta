@@ -1,6 +1,6 @@
 //@version=6
-// iVGeek Risk Management Library v1.0
-// Reusable risk functions for any strategy
+// iVGeek Risk Management Library v3.0
+// Reusable risk functions: sizing, stops, drawdown, daily limits, trailing
 // ============================================================
 library("iVGeek Risk Management")
 
@@ -116,3 +116,81 @@ export minimumRiskReward(float entryPrice, float stopPrice, float targetPrice) =
 // @returns: true if max drawdown exceeded
 export maxDrawdownExceeded(float currentEquity, float peakEquity, float maxDrawdownPct) =>
     peakEquity > 0 ? ((peakEquity - currentEquity) / peakEquity * 100) >= maxDrawdownPct : false
+
+// === Daily Loss Cap ===
+// Tracks daily equity start and current loss, returns true if cap hit
+// @param equity: current strategy equity
+// @param dailyStartEquity: equity at start of day (track with var)
+// @param maxDailyLossPct: max daily loss % before blocking (e.g. 2.0 = 2%)
+// @returns: true if daily loss cap exceeded
+export dailyLossCap(float equity, float dailyStartEquity, float maxDailyLossPct) =>
+    dailyStartEquity > 0 ? ((dailyStartEquity - equity) / dailyStartEquity * 100) >= maxDailyLossPct : false
+
+// === Daily Trade Counter ===
+// Returns true if max daily trades exceeded
+// @param tradesToday: number of trades taken today (track with var)
+// @param maxTrades: maximum allowed trades per day
+// @returns: true if trade limit hit
+export dailyTradeLimit(int tradesToday, int maxTrades) =>
+    tradesToday >= maxTrades
+
+// === Circuit Breaker ===
+// Combined drawdown + trade limit check
+// @param equity: current equity
+// @param dailyStartEquity: start-of-day equity
+// @param monthlyStartEquity: start-of-month equity
+// @param maxDailyLossPct: daily loss cap %
+// @param maxMonthlyLossPct: monthly loss cap %
+// @param tradesToday: trades taken today
+// @param maxDailyTrades: max trades per day
+// @returns: true if circuit breaker should halt trading
+export circuitBreaker(float equity, float dailyStartEquity, float monthlyStartEquity, float maxDailyLossPct, float maxMonthlyLossPct, int tradesToday, int maxDailyTrades) =>
+    dailyHit = dailyLossCap(equity, dailyStartEquity, maxDailyLossPct)
+    monthlyHit = monthlyStartEquity > 0 ? ((monthlyStartEquity - equity) / monthlyStartEquity * 100) >= maxMonthlyLossPct : false
+    tradesHit = dailyTradeLimit(tradesToday, maxDailyTrades)
+    dailyHit or monthlyHit or tradesHit
+
+// === Trailing Stop Manager ===
+// ATR-based trailing stop with activation threshold and breakeven move
+// @param peakPrice: highest high (long) or lowest low (short) since entry
+// @param entryPrice: entry price
+// @param atr: current ATR
+// @param atrMult: ATR multiplier for trail distance
+// @param activateR: R-multiple before trailing activates (e.g. 1.0 = activate at 1R)
+// @param moveBreakevenR: R-multiple to move SL to breakeven (e.g. 1.0 = move at 1R)
+// @param currentSL: current stop loss price
+// @param isLong: true for long
+// @returns: new stop loss price
+export trailingStopManager(float peakPrice, float entryPrice, float atr, float atrMult, float activateR, float moveBreakevenR, float currentSL, bool isLong) =>
+    trailDist = atr * atrMult
+    risk = math.abs(entryPrice - currentSL)
+    unrealizedR = risk > 0 ? (isLong ? (peakPrice - entryPrice) : (entryPrice - peakPrice)) / risk : 0.0
+    newSL = currentSL
+    if unrealizedR >= activateR
+        if isLong
+            trailSL = peakPrice - trailDist
+            newSL := math.max(currentSL, trailSL)
+        else
+            trailSL = peakPrice + trailDist
+            newSL := math.min(currentSL, trailSL)
+    if unrealizedR >= moveBreakevenR and risk > 0
+        if isLong
+            newSL := math.max(newSL, entryPrice)
+        else
+            newSL := math.min(newSL, entryPrice)
+    newSL
+
+// === Kelly Criterion (Extended) ===
+// Full Kelly with configurable fraction and safety cap
+// @param winRate: decimal 0-1
+// @param avgWin: average winning trade amount
+// @param avgLoss: average losing trade amount (positive)
+// @param kellyFraction: fraction of Kelly to use (0.25 = quarter Kelly)
+// @param maxRiskPct: max risk % cap
+// @returns: risk % to use (0-100)
+export kellyExtended(float winRate, float avgWin, float avgLoss, float kellyFraction, float maxRiskPct) =>
+    kellyRaw = 0.0
+    if avgLoss > 0 and avgWin > 0
+        b = avgWin / avgLoss
+        kellyRaw := (winRate * b - (1 - winRate)) / b
+    math.max(0.5, math.min(kellyRaw * kellyFraction * 100, maxRiskPct))

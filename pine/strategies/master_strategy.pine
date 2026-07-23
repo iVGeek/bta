@@ -1,9 +1,9 @@
 // ══════════════════════════════════════════════════════════════════════════════
-// Master Strategy v1.0 — All-in-One Multi-Strategy Engine
+// Master Strategy v3.0 — All-in-One Multi-Strategy Engine with Ichimoku + Patterns
 // Author: iVGeek
 // ══════════════════════════════════════════════════════════════════════════════
 //@version=6
-strategy("Master Strategy v1.0", overlay=true, pyramiding=1,
+strategy("Master Strategy v3.0", overlay=true, pyramiding=1,
      default_qty_type=strategy.percent_of_equity, default_qty_value=100,
      initial_capital=100000, commission_type=strategy.commission.percent,
      commission_value=0.04, slippage=2, calc_on_every_tick=false,
@@ -33,9 +33,9 @@ minScore     = input.int(5, "Min Combined Score (0-15)", minval=1, maxval=15, gr
 
 // ── Timeframes ───────────────────────────────────────────────────────────────
 grpTF        = "Timeframes"
-tf15m        = input.timeframe("15", "MTF TF1", group=grpTF)
-tf1h         = input.timeframe("60", "MTF TF2", group=grpTF)
-tf4h         = input.timeframe("240", "MTF TF3", group=grpTF)
+tf15m        = input.timeframe("15m", "MTF TF1", group=grpTF)
+tf1h         = input.timeframe("1h", "MTF TF2", group=grpTF)
+tf4h         = input.timeframe("4h", "MTF TF3", group=grpTF)
 
 // ── Indicator Parameters ─────────────────────────────────────────────────────
 grpInd       = "Indicators"
@@ -142,6 +142,18 @@ scalpRsiLen  = input.int(5, "Scalp RSI Length", minval=1, group=grpScalp)
 scalpBBLen   = input.int(10, "Scalp BB Length", minval=1, group=grpScalp)
 scalpMinVol  = input.float(1.5, "Scalp Min Volume Mult", minval=0.5, step=0.1, group=grpScalp)
 
+// ── Ichimoku ─────────────────────────────────────────────────────────────────
+grpIchimoku  = "Ichimoku Cloud"
+useIchimoku  = input.bool(true, "Use Ichimoku in Signals", group=grpIchimoku)
+ichConvLen   = input.int(9, "Conversion Line", minval=1, group=grpIchimoku)
+ichBaseLen   = input.int(26, "Base Line", minval=1, group=grpIchimoku)
+ichSpanBLen  = input.int(52, "Span B Length", minval=1, group=grpIchimoku)
+showCloud    = input.bool(true, "Show Cloud on Chart", group=grpIchimoku)
+
+// ── Candlestick Patterns ─────────────────────────────────────────────────────
+grpPatterns  = "Candlestick Patterns"
+usePatterns  = input.bool(true, "Use Patterns in Signals", group=grpPatterns)
+
 // ── Dashboard ────────────────────────────────────────────────────────────────
 grpDash      = "Dashboard"
 dashSize     = input.string("normal", "Dashboard Size", options=["tiny","small","normal","large"], group=grpDash)
@@ -170,6 +182,27 @@ emaT_1h      = request.security(syminfo.tickerid, tf1h, ta.ema(close, emaTrend))
 emaT_4h      = request.security(syminfo.tickerid, tf4h, ta.ema(close, emaTrend))
 rsi_1h       = request.security(syminfo.tickerid, tf1h, ta.rsi(close, rsiLen))
 [diPlus, diMinus, adx_1h] = request.security(syminfo.tickerid, tf1h, ta.dmi(14, 14))
+
+// Ichimoku Cloud
+ichTenkan    = (ta.highest(high, ichConvLen) + ta.lowest(low, ichConvLen)) / 2
+ichKijun     = (ta.highest(high, ichBaseLen) + ta.lowest(low, ichBaseLen)) / 2
+ichSenkouA   = (ichTenkan + ichKijun) / 2
+ichSenkouB   = (ta.highest(high, ichSpanBLen) + ta.lowest(low, ichSpanBLen)) / 2
+ichCloudTop  = math.max(ichSenkouA, ichSenkouB)
+ichCloudBot  = math.min(ichSenkouA, ichSenkouB)
+ichAboveCloud = close > ichCloudTop
+ichBelowCloud = close < ichCloudBot
+ichCloudBull  = ichSenkouA > ichSenkouB
+ichTKCross    = ichTenkan > ichKijun and ichTenkan[1] <= ichKijun[1]
+ichTKDead     = ichTenkan < ichKijun and ichTenkan[1] >= ichKijun[1]
+
+// Candlestick Patterns
+patDoji       = patternDoji(open, high, low, close)
+patHammer     = patternHammer(open, high, low, close)
+patEngulf     = patternEngulfing(open[1], close[1], open, close, high, low)
+patPin        = patternPinBar(open, high, low, close)
+patBullScore  = (patDoji == 1 ? 1.0 : 0.0) + (patHammer == 1 ? 1.0 : 0.0) + (patEngulf == 1 ? 1.0 : 0.0) + (patPin == 1 ? 1.0 : 0.0)
+patBearScore  = (patDoji == -1 ? 1.0 : 0.0) + (patHammer == -1 ? 1.0 : 0.0) + (patEngulf == -1 ? 1.0 : 0.0) + (patPin == -1 ? 1.0 : 0.0)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // MARKET REGIME DETECTION
@@ -330,20 +363,27 @@ scBullSignal = useScalping and scBullScore >= 2
 scBearSignal = useScalping and scBearScore >= 2
 
 // ══════════════════════════════════════════════════════════════════════════════
-// COMBINED SIGNAL SCORING
+// COMBINED SIGNAL SCORING (v3.0 — includes Ichimoku + Patterns)
 // ══════════════════════════════════════════════════════════════════════════════
+
+ichBullPoints = useIchimoku ? (ichAboveCloud ? 1.0 : 0.0) + (ichCloudBull ? 1.0 : 0.0) + (ichTKCross ? 1.0 : 0.0) : 0.0
+ichBearPoints = useIchimoku ? (ichBelowCloud ? 1.0 : 0.0) + (not ichCloudBull ? 1.0 : 0.0) + (ichTKDead ? 1.0 : 0.0) : 0.0
 
 totalBullScore = (useMomentum ? momBullScore : 0.0) +
      (useMeanRev ? mrBullScore : 0.0) +
      (useBreakout ? boBullScore : 0.0) +
      (useSmartMoney ? smBullScore : 0.0) +
-     (useScalping ? scBullScore : 0.0)
+     (useScalping ? scBullScore : 0.0) +
+     ichBullPoints +
+     (usePatterns ? patBullScore : 0.0)
 
 totalBearScore = (useMomentum ? momBearScore : 0.0) +
      (useMeanRev ? mrBearScore : 0.0) +
      (useBreakout ? boBearScore : 0.0) +
      (useSmartMoney ? smBearScore : 0.0) +
-     (useScalping ? scBearScore : 0.0)
+     (useScalping ? scBearScore : 0.0) +
+     ichBearPoints +
+     (usePatterns ? patBearScore : 0.0)
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SESSION FILTER
@@ -643,6 +683,14 @@ pUpper = plot(upper, "BB Upper", color=color.new(color.gray, 70))
 pLower = plot(lower, "BB Lower", color=color.new(color.gray, 70))
 fill(pUpper, pLower, color=isSqueeze ? color.new(color.purple, 90) : color.new(color.gray, 95))
 
+// — Ichimoku Cloud —
+if showCloud
+    pTenkan  = plot(ichTenkan, "Tenkan", color=color.new(color.teal, 30), linewidth=1)
+    pKijun   = plot(ichKijun, "Kijun", color=color.new(color.maroon, 30), linewidth=1)
+    pSpanA   = plot(ichSenkouA, "Senkou A", color=color.new(color.green, 70), linewidth=1, offset=26)
+    pSpanB   = plot(ichSenkouB, "Senkou B", color=color.new(color.red, 70), linewidth=1, offset=26)
+    fill(pSpanA, pSpanB, color=ichCloudBull ? color.new(color.green, 90) : color.new(color.red, 90), offset=26)
+
 // — Entry Markers —
 plotshape(canLong and not isLong[1], "Long Entry", shape.triangleup, location.belowbar,
      color.new(color.lime, 0), size=size.normal, text="BUY")
@@ -673,6 +721,20 @@ plotshape(boBearSignal and not boBearSignal[1], "Breakout Short", shape.diamond,
      location.abovebar, color.new(color.fuchsia, 20), size=size.tiny, text="BO")
 plotshape(smBearSignal and not smBearSignal[1], "Smart Money Short", shape.diamond,
      location.abovebar, color.new(color.teal, 20), size=size.tiny, text="SM")
+
+// — Pattern Markers —
+plotshape(patHammer == 1 and usePatterns, "Hammer", shape.triangleup, location.belowbar,
+     color.new(color.lime, 40), size=size.tiny, text="Ham")
+plotshape(patHammer == -1 and usePatterns, "Shooting Star", shape.triangledown, location.abovebar,
+     color.new(color.red, 40), size=size.tiny, text="SS")
+plotshape(patEngulf == 1 and usePatterns, "Bull Engulf", shape.triangleup, location.belowbar,
+     color.new(color.green, 30), size=size.tiny, text="Eng")
+plotshape(patEngulf == -1 and usePatterns, "Bear Engulf", shape.triangledown, location.abovebar,
+     color.new(color.red, 30), size=size.tiny, text="Eng")
+plotshape(patPin == 1 and usePatterns, "Bull Pin", shape.diamond, location.belowbar,
+     color.new(color.aqua, 40), size=size.tiny, text="Pin")
+plotshape(patPin == -1 and usePatterns, "Bear Pin", shape.diamond, location.abovebar,
+     color.new(color.aqua, 40), size=size.tiny, text="Pin")
 
 // — Order Blocks —
 if showOB
@@ -732,7 +794,7 @@ plotshape(isSqueeze, "Squeeze", shape.circle, location.belowbar,
 
 if showDashboard and barstate.islast
     var table dash = table.new(dashSize == "tiny" ? position.top_right : position.top_right,
-         2, 16, bgcolor=dashBgColor, border_width=1, border_color=color.new(color.gray, 50))
+         2, 20, bgcolor=dashBgColor, border_width=1, border_color=color.new(color.gray, 50))
 
     txtSize = dashSize == "tiny" ? size.tiny : dashSize == "small" ? size.small : dashSize == "large" ? size.large : size.normal
 
@@ -740,7 +802,7 @@ if showDashboard and barstate.islast
     regCol   = isTrending ? color.green : isVolatile ? color.orange : color.gray
 
     table.cell(dash, 0, 0, "Master Strategy", text_size=txtSize, text_color=color.white, bgcolor=color.new(color.blue, 30))
-    table.cell(dash, 1, 0, "v1.0", text_size=txtSize, text_color=color.white, bgcolor=color.new(color.blue, 30))
+    table.cell(dash, 1, 0, "v3.0", text_size=txtSize, text_color=color.white, bgcolor=color.new(color.blue, 30))
 
     table.cell(dash, 0, 1, "Regime", text_size=txtSize, text_color=color.white)
     table.cell(dash, 1, 1, regText, text_size=txtSize, text_color=regCol)
@@ -789,22 +851,32 @@ if showDashboard and barstate.islast
     table.cell(dash, 1, 11, scBullSignal ? "LONG" : scBearSignal ? "SHORT" : "—",
          text_size=txtSize, text_color=scCol)
 
+    ichCol = ichAboveCloud and ichCloudBull ? color.lime : ichBelowCloud and not ichCloudBull ? color.red : color.gray
+    table.cell(dash, 0, 12, "Ichimoku", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 12, ichAboveCloud ? "ABOVE" : ichBelowCloud ? "BELOW" : "IN",
+         text_size=txtSize, text_color=ichCol)
+
+    patCol = patBullScore >= 2 ? color.lime : patBearScore >= 2 ? color.red : color.gray
+    table.cell(dash, 0, 13, "Patterns", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 13, patBullScore >= 2 ? "BULL " + str.tostring(patBullScore, "#.#") : patBearScore >= 2 ? "BEAR " + str.tostring(patBearScore, "#.#") : str.tostring(patBullScore + patBearScore, "#.#"),
+         text_size=txtSize, text_color=patCol)
+
     posText = isLong ? "LONG" : isShort ? "SHORT" : "FLAT"
     posCol  = isLong ? color.lime : isShort ? color.red : color.gray
-    table.cell(dash, 0, 12, "Position", text_size=txtSize, text_color=color.white)
-    table.cell(dash, 1, 12, posText, text_size=txtSize, text_color=posCol)
+    table.cell(dash, 0, 14, "Position", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 14, posText, text_size=txtSize, text_color=posCol)
 
-    table.cell(dash, 0, 13, "R:R", text_size=txtSize, text_color=color.white)
-    table.cell(dash, 1, 13, str.tostring(actualRR, "#.#") + ":1",
+    table.cell(dash, 0, 15, "R:R", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 15, str.tostring(actualRR, "#.#") + ":1",
          text_size=txtSize, text_color=rrOK ? color.lime : color.red)
 
-    table.cell(dash, 0, 14, "Risk %", text_size=txtSize, text_color=color.white)
-    table.cell(dash, 1, 14, str.tostring(finalRiskPct, "#.#") + "%",
+    table.cell(dash, 0, 16, "Risk %", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 16, str.tostring(finalRiskPct, "#.#") + "%",
          text_size=txtSize, text_color=color.white)
 
-    table.cell(dash, 0, 15, "DD " + str.tostring(dailyDD, "#.#") + "%",
+    table.cell(dash, 0, 17, "DD " + str.tostring(dailyDD, "#.#") + "%",
          text_size=txtSize, text_color=dailyDD > dailyMaxDD * 0.7 ? color.red : color.white)
-    table.cell(dash, 1, 15, circuitBreaker ? "BLOCKED" : "OK",
+    table.cell(dash, 1, 17, circuitBreaker ? "BLOCKED" : "OK",
          text_size=txtSize, text_color=circuitBreaker ? color.red : color.lime)
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -817,10 +889,12 @@ strategiesActive = str.replace_all(
      (useMeanRev and (mrBullSignal or mrBearSignal) ? "MR " : "") +
      (useBreakout and (boBullSignal or boBearSignal) ? "BO " : "") +
      (useSmartMoney and (smBullSignal or smBearSignal) ? "SM " : "") +
-     (useScalping and (scBullSignal or scBearSignal) ? "SC " : ""),
+     (useScalping and (scBullSignal or scBearSignal) ? "SC " : "") +
+     (useIchimoku and (ichTKCross or ichTKDead) ? "Ich " : "") +
+     (usePatterns and (patBullScore >= 2 or patBearScore >= 2) ? "Pat " : ""),
      " ", ",")
 
-entryJSON   = '{"bot_id":"' + botID + '","secret":"' + botSecret + '","signal":"' + signalType + '","symbol":"' + syminfo.tickerid + '","confidence":' + str.tostring(signalConfidence) + ',"strategy":"Master","sub_strategies":"' + strategiesActive + '","timeframe":"' + timeframe.period + '","price":' + str.tostring(close) + ',"sl":' + str.tostring(bullSignal ? longSL : shortSL) + ',"tp":' + str.tostring(bullSignal ? longTP : shortTP) + ',"risk_pct":' + str.tostring(finalRiskPct) + ',"score":' + str.tostring(math.max(totalBullScore, totalBearScore)) + ',"regime":"' + (isTrending ? "trending" : isVolatile ? "volatile" : "ranging") + '","mtf_alignment":' + str.tostring(math.max(mtfScore, mtfBearScore)) + '}'
+entryJSON   = '{"bot_id":"' + botID + '","secret":"' + botSecret + '","signal":"' + signalType + '","symbol":"' + syminfo.tickerid + '","confidence":' + str.tostring(signalConfidence) + ',"strategy":"Master","sub_strategies":"' + strategiesActive + '","timeframe":"' + timeframe.period + '","price":' + str.tostring(close) + ',"sl":' + str.tostring(bullSignal ? longSL : shortSL) + ',"tp":' + str.tostring(bullSignal ? longTP : shortTP) + ',"risk_pct":' + str.tostring(finalRiskPct) + ',"score":' + str.tostring(math.max(totalBullScore, totalBearScore)) + ',"regime":"' + (isTrending ? "trending" : isVolatile ? "volatile" : "ranging") + '","mtf_alignment":' + str.tostring(math.max(mtfScore, mtfBearScore)) + ',"ichimoku":' + (ichAboveCloud ? "true" : "false") + ',"patterns":' + str.tostring(patBullScore + patBearScore) + '}'
 
 exitJSON    = '{"bot_id":"' + botID + '","secret":"' + botSecret + '","signal":"exit","symbol":"' + syminfo.tickerid + '","strategy":"Master","timeframe":"' + timeframe.period + '","price":' + str.tostring(close) + ',"bars_held":' + str.tostring(barsInTrade) + '}'
 
