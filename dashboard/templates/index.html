@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bot Trading AI Terminal</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.0/dist/lightweight-charts.standalone.production.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#080d1a;--bg2:#0e1529;--bg3:#141e36;--bg4:#1c2a4a;--bg5:#243356;
+  --border:#1e2d50;--border2:#2d4070;--border3:#3d5590;
+  --text:#f4f7ff;--text2:#a3b8e0;--text3:#6b82b0;
+  --green:#22e87a;--green2:#10c960;--green3:#0aa048;--green-bg:rgba(34,232,122,0.1);
+  --red:#ff4d5a;--red2:#e02030;--red3:#b01828;--red-bg:rgba(255,77,90,0.1);
+  --blue:#4da6ff;--cyan:#22d3a7;--yellow:#fbbf24;--purple:#a78bfa;--orange:#f97316;--pink:#ec4899;
+  --glass:rgba(8,13,26,0.88);--glass2:rgba(14,21,41,0.94);--glass3:rgba(20,30,54,0.85);
+  --glow-green:0 0 24px rgba(34,232,122,0.25);--glow-red:0 0 24px rgba(255,77,90,0.25);
+  --glow-blue:0 0 24px rgba(77,166,255,0.2);--glow-purple:0 0 24px rgba(167,139,250,0.2);
+  --radius:8px;--radius-sm:5px;--radius-lg:12px;
+}
+html,body{height:100%;overflow:hidden}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text)}
+
+.app{display:grid;grid-template-rows:48px 28px 1fr 32px;grid-template-columns:270px 1fr 360px;height:100vh}
+
+/* ── Header ─────────────────────────────────────────────────────────────────── */
+header{grid-column:1/-1;display:flex;align-items:center;gap:10px;padding:0 16px;
+  background:linear-gradient(90deg,#0b1224,#111d3a 30%,#0e1830 60%,#0b1224);
+  border-bottom:1px solid var(--border);z-index:100;position:relative}
+header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(77,166,255,.3),rgba(34,211,167,.3),rgba(167,139,250,.3),transparent)}
+.logo{font-size:16px;font-weight:900;background:linear-gradient(135deg,var(--cyan),var(--blue),var(--purple));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:2px;white-space:nowrap}
+.logo-sub{font-size:9px;color:var(--text2);letter-spacing:3px;margin-left:4px;font-weight:600}
+.hdr-sep{width:1px;height:26px;background:linear-gradient(180deg,transparent,var(--border2),transparent);margin:0 4px}
+.conn{display:flex;align-items:center;gap:5px;font-size:10px;color:var(--text2);font-weight:600;letter-spacing:.5px}
+.conn-dot{width:6px;height:6px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
+.conn-dot.off{background:var(--red);box-shadow:0 0 8px var(--red);animation:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+@keyframes glow-pulse{0%,100%{box-shadow:0 0 8px rgba(34,232,122,.3)}50%{box-shadow:0 0 16px rgba(34,232,122,.6)}}
+
+.hdr-controls{display:flex;gap:4px}
+.btn{padding:5px 12px;border:1px solid var(--border2);border-radius:var(--radius-sm);
+  background:var(--bg3);color:var(--text2);cursor:pointer;font-size:9px;font-weight:700;
+  font-family:inherit;transition:all .15s;letter-spacing:.8px;text-transform:uppercase}
+.btn:hover{background:var(--bg4);border-color:var(--blue);color:var(--text);transform:translateY(-1px)}
+.btn:active{transform:translateY(0)}
+.btn.start{background:linear-gradient(135deg,var(--green3),var(--green));color:#000;border-color:var(--green);
+  animation:glow-pulse 3s infinite}
+.btn.start:hover{box-shadow:var(--glow-green)}
+.btn.stop{background:linear-gradient(135deg,var(--red3),var(--red));color:#fff;border-color:var(--red)}
+.btn.stop:hover{box-shadow:var(--glow-red)}
+.btn.ai-on{background:linear-gradient(135deg,#6d28d9,var(--purple));color:#fff;border-color:var(--purple);box-shadow:var(--glow-purple)}
+.btn.ai-off{background:var(--bg3);color:var(--text3)}
+.btn.paper{border-color:var(--yellow);color:var(--yellow)}
+.btn.paper.on{background:var(--yellow);color:#000;font-weight:800}
+.btn.auto{border-color:var(--cyan);color:var(--cyan)}
+.btn.auto.on{background:var(--cyan);color:#000;font-weight:800}
+.btn.trial-btn{border-color:var(--purple);color:var(--purple)}
+.btn.trial-btn.on{background:linear-gradient(135deg,#7c3aed,var(--purple));color:#fff;font-weight:800;box-shadow:var(--glow-purple);animation:glow-pulse 3s infinite}
+
+.asset-filter{display:flex;gap:3px;padding:4px 10px;background:var(--bg2);border-bottom:1px solid var(--border)}
+.af-btn{padding:4px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);
+  background:transparent;color:var(--text2);cursor:pointer;font-size:9px;font-weight:800;
+  font-family:inherit;transition:all .15s;letter-spacing:1px;text-transform:uppercase}
+.af-btn:hover{border-color:var(--border2);color:var(--text)}
+.af-btn.on{background:var(--bg4);color:var(--cyan);border-color:var(--cyan)}
+
+.hdr-stats{display:flex;gap:14px;margin-left:auto}
+.hdr-stat{display:flex;flex-direction:column;align-items:flex-end;min-width:60px}
+.hdr-stat .l{font-size:8px;color:var(--text2);text-transform:uppercase;letter-spacing:1.5px;font-weight:600}
+.hdr-stat .v{font-size:13px;font-weight:700;font-family:'JetBrains Mono',monospace;line-height:1.2;color:var(--text)}
+.hdr-stat .v.g{color:var(--green)}.hdr-stat .v.r{color:var(--red)}.hdr-stat .v.b{color:var(--blue)}
+
+/* ── Ticker Tape ────────────────────────────────────────────────────────────── */
+.ticker-tape{grid-column:1/-1;display:flex;align-items:center;overflow:hidden;
+  background:linear-gradient(90deg,#0a1020,#0d1528);border-bottom:1px solid var(--border);position:relative}
+.ticker-tape::before,.ticker-tape::after{content:'';position:absolute;top:0;bottom:0;width:40px;z-index:2;pointer-events:none}
+.ticker-tape::before{left:0;background:linear-gradient(90deg,#0a1020,transparent)}
+.ticker-tape::after{right:0;background:linear-gradient(270deg,#0a1020,transparent)}
+.tape-track{display:flex;gap:24px;animation:tape-scroll 40s linear infinite;white-space:nowrap;padding:0 20px}
+.tape-track:hover{animation-play-state:paused}
+@keyframes tape-scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.tape-item{display:flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:2px 0}
+.tape-sym{color:var(--text2);font-weight:800;font-size:11px;letter-spacing:.5px}
+.tape-price{color:var(--text);font-family:'JetBrains Mono',monospace;font-weight:700;font-size:12px}
+.tape-chg{font-family:'JetBrains Mono',monospace;font-weight:800;font-size:11px;padding:1px 5px;border-radius:3px}
+.tape-chg.p{color:var(--green);background:rgba(34,232,122,.08)}.tape-chg.n{color:var(--red);background:rgba(255,77,90,.08)}
+.tape-spark{width:48px;height:18px}
+
+/* ── Left Panel ─────────────────────────────────────────────────────────────── */
+.left{background:var(--glass2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.panel-hdr{padding:8px 12px;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:2px;
+  color:var(--text2);border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;
+  background:linear-gradient(180deg,rgba(30,45,80,.25),transparent)}
+.panel-hdr .cnt{background:var(--bg4);padding:1px 6px;border-radius:8px;font-size:7px;color:var(--text);font-weight:800}
+.panel-hdr .ico{margin-right:4px;font-size:10px}
+
+.watchlist{flex:1;overflow-y:auto}
+.tkr{display:grid;grid-template-columns:1fr 56px auto;gap:4px;padding:7px 12px;
+  border-bottom:1px solid rgba(30,45,80,.5);cursor:pointer;transition:all .15s;align-items:center}
+.tkr:hover{background:rgba(77,166,255,.04)}
+.tkr.active{background:rgba(34,211,167,.05);border-left:2px solid var(--cyan)}
+.tkr-s{font-weight:800;font-size:12px;color:var(--text)}.tkr-sub{color:var(--text2);font-size:8px;font-weight:500;letter-spacing:.5px}
+.tkr-badge{display:inline-block;font-size:7px;font-weight:900;padding:1px 4px;border-radius:3px;letter-spacing:.5px;margin-left:4px;vertical-align:middle}
+.tkr-badge.crypto{background:rgba(77,166,255,.1);color:var(--cyan);border:1px solid rgba(77,166,255,.15)}
+.tkr-badge.stock{background:rgba(167,139,250,.1);color:var(--purple);border:1px solid rgba(167,139,250,.15)}
+.tkr-spark{width:56px;height:22px}
+.tkr-p{text-align:right;font-weight:700;font-size:12px;font-family:'JetBrains Mono',monospace;color:var(--text)}
+.tkr-c{text-align:right;font-size:10px;font-weight:800;font-family:'JetBrains Mono',monospace}
+.tkr-c.p{color:var(--green)}.tkr-c.n{color:var(--red)}
+
+.heatmap{display:grid;grid-template-columns:repeat(3,1fr);gap:3px;padding:6px 8px}
+.hm{padding:5px 3px;border-radius:var(--radius-sm);text-align:center;cursor:pointer;
+  transition:all .15s;border:1px solid rgba(30,45,80,.3);position:relative;overflow:hidden}
+.hm:hover{transform:scale(1.05);z-index:1;border-color:var(--border2)}
+.hm::before{content:'';position:absolute;inset:0;opacity:0;transition:opacity .15s;
+  background:linear-gradient(135deg,rgba(255,255,255,.05),transparent)}
+.hm:hover::before{opacity:1}
+.hm .s{font-size:10px;font-weight:800;color:var(--text);letter-spacing:.5px}.hm .p{font-size:12px;font-weight:900;font-family:'JetBrains Mono',monospace}
+.hm .vol{font-size:8px;color:var(--text2);margin-top:1px;font-weight:600}
+
+.left-bot{border-top:1px solid var(--border);padding:8px 12px}
+.mini{display:flex;justify-content:space-between;font-size:11px;padding:2px 0}
+.mini .l{color:var(--text2);font-weight:500}.mini .v{font-weight:700;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text)}
+
+/* ── Center ─────────────────────────────────────────────────────────────────── */
+.center{display:flex;flex-direction:column;overflow:hidden;position:relative}
+.top-bar{display:flex;align-items:center;gap:10px;padding:6px 14px;border-bottom:1px solid var(--border);
+  background:linear-gradient(180deg,rgba(14,21,41,.95),rgba(10,16,32,.95))}
+.sym-info{display:flex;align-items:baseline;gap:8px}
+.sym-name{font-size:17px;font-weight:900;background:linear-gradient(135deg,var(--cyan),var(--blue));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:.5px}
+.sym-price{font-size:20px;font-weight:900;font-family:'JetBrains Mono',monospace;color:var(--text);
+  text-shadow:0 0 24px rgba(77,166,255,.2)}
+.sym-chg{font-size:11px;padding:2px 8px;border-radius:var(--radius-sm);font-weight:800;letter-spacing:.3px}
+.sym-chg.p{background:var(--green-bg);color:var(--green)}.sym-chg.n{background:var(--red-bg);color:var(--red)}
+.sym-extra{margin-left:auto;display:flex;gap:14px;font-size:11px;color:var(--text2);font-weight:500}
+.sym-extra b{color:var(--text);font-family:'JetBrains Mono',monospace;font-weight:700}
+.tf-row{display:flex;gap:3px;margin-left:10px}
+.tf{padding:3px 10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:transparent;
+  color:var(--text3);cursor:pointer;font-size:10px;font-family:inherit;font-weight:700;transition:all .12s;letter-spacing:.3px}
+.tf.on{background:linear-gradient(135deg,rgba(77,166,255,.2),rgba(34,211,167,.15));color:var(--cyan);
+  border-color:var(--cyan);box-shadow:0 0 12px rgba(34,211,167,.15)}
+.tf:hover:not(.on){border-color:var(--text3);color:var(--text2)}
+
+.ind-bar{display:flex;gap:4px;padding:4px 14px;border-bottom:1px solid var(--border);background:var(--glass);font-size:9px;overflow-x:auto}
+.ind{display:flex;gap:3px;align-items:center;white-space:nowrap;padding:2px 6px;border-radius:var(--radius-sm);
+  background:rgba(20,30,54,.5);border:1px solid rgba(30,45,80,.3)}
+.ind .l{color:var(--text2);font-size:8px;font-weight:700;letter-spacing:.5px}.ind .v{font-weight:800;font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text)}
+.ind .v.bull{color:var(--green)}.ind .v.bear{color:var(--red)}.ind .v.neut{color:var(--yellow)}
+.chart-wrap{position:relative;flex-shrink:0}
+.chart-label{position:absolute;top:6px;left:10px;font-size:9px;color:var(--text2);text-transform:uppercase;
+  letter-spacing:2px;z-index:5;pointer-events:none;font-weight:700;
+  text-shadow:0 1px 4px rgba(0,0,0,.5)}
+#cMain{flex:3;min-height:0}
+#cRsi{flex:1;border-top:1px solid var(--border)}
+#cMacd{flex:1;border-top:1px solid var(--border)}
+
+/* ── Right Panel ────────────────────────────────────────────────────────────── */
+.right{background:var(--glass2);border-left:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.rtabs{display:flex;border-bottom:1px solid var(--border);background:rgba(14,21,41,.5)}
+.rtab{flex:1;padding:8px 1px;text-align:center;font-size:9px;font-weight:800;color:var(--text3);
+  cursor:pointer;border-bottom:2px solid transparent;text-transform:uppercase;letter-spacing:.8px;transition:all .12s;position:relative}
+.rtab:hover{color:var(--text);background:rgba(77,166,255,.03)}
+.rtab.on{color:var(--cyan);border-bottom-color:var(--cyan)}
+.rtab.on::after{content:'';position:absolute;bottom:-1px;left:20%;right:20%;height:2px;
+  background:var(--cyan);border-radius:1px;filter:blur(3px)}
+.rp{display:none;flex:1;overflow-y:auto;padding:8px;gap:6px}
+.rp.on{display:flex;flex-direction:column}
+
+/* ── AI Panel ───────────────────────────────────────────────────────────────── */
+.ai-glass{background:linear-gradient(135deg,rgba(167,139,250,.08),rgba(34,211,167,.04),rgba(77,166,255,.06));
+  border:1px solid rgba(167,139,250,.2);border-radius:var(--radius-lg);padding:12px;
+  position:relative;overflow:hidden}
+.ai-glass::before{content:'';position:absolute;top:-50%;right:-50%;width:100%;height:100%;
+  background:radial-gradient(circle,rgba(167,139,250,.06),transparent 70%);pointer-events:none}
+.ai-hdr{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.ai-title{font-size:11px;font-weight:900;background:linear-gradient(135deg,var(--purple),var(--cyan));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:1.5px}
+.ai-badge{font-size:8px;padding:2px 8px;border-radius:8px;font-weight:800;letter-spacing:1px}
+.ai-badge.on{background:rgba(167,139,250,.15);color:var(--purple);border:1px solid rgba(167,139,250,.3);
+  animation:glow-pulse 3s infinite}
+.ai-badge.off{background:var(--bg);color:var(--text3)}
+.ai-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.ai-cell{padding:3px 0}.ai-cell .l{font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:1px;font-weight:700}
+.ai-cell .v{font-size:13px;font-weight:800;font-family:'JetBrains Mono',monospace;color:var(--text)}
+.ai-rec{margin-top:8px;padding:8px 10px;background:rgba(34,211,167,.04);border:1px solid rgba(34,211,167,.12);
+  border-radius:var(--radius);font-size:11px;color:var(--cyan);line-height:1.4;font-weight:500}
+.ai-rec::before{content:'AI INSIGHT';display:block;font-size:8px;font-weight:900;letter-spacing:2px;color:var(--purple);margin-bottom:4px}
+
+/* ── Risk Gauge ─────────────────────────────────────────────────────────────── */
+.gauge-box{text-align:center;padding:12px;background:var(--bg3);border-radius:var(--radius-lg);
+  border:1px solid var(--border);position:relative;overflow:hidden}
+.gauge-box::after{content:'';position:absolute;inset:0;
+  background:linear-gradient(135deg,rgba(77,166,255,.03),transparent);pointer-events:none}
+.gauge-svg{width:140px;height:70px}
+.gauge-bg{fill:none;stroke:var(--bg5);stroke-width:10;stroke-linecap:round}
+.gauge-fill{fill:none;stroke-width:10;stroke-linecap:round;transition:all .8s cubic-bezier(.4,0,.2,1);
+  filter:drop-shadow(0 0 6px currentColor)}
+.gauge-val{font-size:22px;font-weight:900;font-family:'JetBrains Mono',monospace;margin-top:4px;color:var(--text)}
+.gauge-sub{font-size:10px;color:var(--text2);text-transform:uppercase;letter-spacing:1.5px;font-weight:700}
+
+/* ── Opportunity Cards ──────────────────────────────────────────────────────── */
+.opp{padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
+  transition:all .15s;position:relative;overflow:hidden}
+.opp:hover{border-color:var(--cyan);transform:translateX(2px)}
+.opp::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;border-radius:2px 0 0 2px}
+.opp.long::before{background:var(--green)}.opp.short::before{background:var(--red)}
+.opp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.opp-sym{font-weight:900;font-size:12px;color:var(--text)}.opp-side{font-size:8px;font-weight:800;padding:2px 8px;border-radius:var(--radius-sm);letter-spacing:.5px}
+.opp-side.long{background:var(--green-bg);color:var(--green)}.opp-side.short{background:var(--red-bg);color:var(--red)}
+.opp-reason{font-size:11px;color:var(--text2)}.opp-conf{font-size:11px;font-weight:800;font-family:'JetBrains Mono',monospace;text-align:right}
+
+/* ── Order Book ─────────────────────────────────────────────────────────────── */
+.ob{font-size:10px;padding:0 8px}
+.ob-row{display:grid;grid-template-columns:1fr auto;gap:6px;padding:2px 6px;position:relative;border-radius:var(--radius-sm)}
+.ob-row .p{font-weight:700;z-index:1;font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text)}
+.ob-row .q{text-align:right;color:var(--text2);z-index:1;font-family:'JetBrains Mono',monospace;font-size:11px}
+.ob-row .bar{position:absolute;top:0;bottom:0;border-radius:var(--radius-sm);opacity:.12}
+.ob-row.ask .bar{background:var(--red);right:0}.ob-row.bid .bar{background:var(--green);left:0}
+.ob-spread{text-align:center;padding:6px;font-size:10px;color:var(--text2);border-top:1px solid var(--border);
+  border-bottom:1px solid var(--border);margin:3px 0;font-family:'JetBrains Mono',monospace;font-weight:700;letter-spacing:.5px}
+
+/* ── Signal Log ─────────────────────────────────────────────────────────────── */
+.sig{padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
+  font-size:10px;transition:all .15s;position:relative;overflow:hidden}
+.sig:hover{border-color:var(--border2)}
+.sig-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:3px}
+.sig-type{font-weight:900;font-size:11px}.sig-type.buy{color:var(--green)}.sig-type.sell{color:var(--red)}
+.sig-badge{font-size:8px;padding:2px 6px;border-radius:6px;font-weight:800;letter-spacing:.3px}
+.sig-badge.high{background:var(--green-bg);color:var(--green)}.sig-badge.med{background:rgba(251,191,36,.08);color:var(--yellow)}
+.sig-badge.low{background:var(--red-bg);color:var(--red)}
+.sig-detail{color:var(--text2);font-size:10px;line-height:1.3}
+.sig-reasons{margin-top:3px;font-size:10px;color:var(--text2)}
+.sig-reasons span{display:inline-block;background:var(--bg4);padding:2px 5px;border-radius:var(--radius-sm);margin:1px 2px;font-size:9px;font-weight:600;color:var(--text2)}
+
+/* ── Trade Row ──────────────────────────────────────────────────────────────── */
+.tr{display:grid;grid-template-columns:50px 1fr 75px 65px;gap:6px;padding:6px 8px;
+  border-bottom:1px solid rgba(30,45,80,.5);font-size:11px;align-items:center;transition:background .1s}
+.tr:hover{background:var(--bg3)}
+.tr-t{color:var(--text2);font-size:10px;font-family:'JetBrains Mono',monospace}
+.tr-sym{font-weight:800;color:var(--text)}.tr-side{font-weight:900;font-size:10px}
+.tr-side.buy{color:var(--green)}.tr-side.sell{color:var(--red)}
+.tr-pnl{font-weight:800;text-align:right;font-family:'JetBrains Mono',monospace}.tr-pnl.pos{color:var(--green)}.tr-pnl.neg{color:var(--red)}
+
+/* ── Position Card ──────────────────────────────────────────────────────────── */
+.pos{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:10px;position:relative;overflow:hidden;transition:border-color .15s}
+.pos:hover{border-color:var(--border2)}
+.pos::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:3px 0 0 3px}
+.pos.long::before{background:linear-gradient(180deg,var(--green),var(--green3))}
+.pos.short::before{background:linear-gradient(180deg,var(--red),var(--red3))}
+.pos-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.pos-sym{font-weight:900;font-size:13px;color:var(--text)}.pos-side{font-size:9px;font-weight:900;padding:2px 8px;border-radius:var(--radius-sm);letter-spacing:1px}
+.pos-side.long{background:var(--green-bg);color:var(--green)}.pos-side.short{background:var(--red-bg);color:var(--red)}
+.pos-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;font-size:11px}
+.pos-grid .l{color:var(--text2);font-weight:500}.pos-grid .v{font-weight:700;text-align:right;font-family:'JetBrains Mono',monospace;color:var(--text)}
+.pos-pnl{font-size:16px;font-weight:900;text-align:right;margin-top:6px;font-family:'JetBrains Mono',monospace}
+.pos-pnl.pos{color:var(--green)}.pos-pnl.neg{color:var(--red)}
+
+/* ── Trade Exec Panel ───────────────────────────────────────────────────────── */
+.exec{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);padding:12px}
+.exec-title{font-size:11px;font-weight:900;text-transform:uppercase;letter-spacing:1.5px;color:var(--text2);margin-bottom:8px}
+.exec-row{display:flex;gap:6px;margin-bottom:6px}
+.exec-btn{flex:1;padding:10px;border-radius:var(--radius);border:none;font-weight:900;font-size:11px;
+  cursor:pointer;font-family:inherit;transition:all .15s;letter-spacing:1px;text-transform:uppercase}
+.exec-btn.buy{background:linear-gradient(135deg,var(--green3),var(--green));color:#000}
+.exec-btn.sell{background:linear-gradient(135deg,var(--red3),var(--red));color:#fff}
+.exec-btn:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(0,0,0,.4)}
+.exec-btn:active{transform:translateY(0)}
+
+/* ── Rules ──────────────────────────────────────────────────────────────────── */
+.rules{padding:8px 12px}
+.rule{display:flex;gap:6px;align-items:center;font-size:11px;padding:2px 0;color:var(--text2);font-weight:500}
+.rule-dot{width:5px;height:5px;border-radius:50%;background:var(--green);flex-shrink:0;box-shadow:0 0 6px var(--green)}
+
+/* ── Empty ──────────────────────────────────────────────────────────────────── */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;
+  color:var(--text2);font-size:12px;gap:6px;text-align:center;font-weight:500}
+
+/* ── Modal ──────────────────────────────────────────────────────────────────── */
+.modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.8);backdrop-filter:blur(12px);z-index:200;align-items:center;justify-content:center}
+.modal-bg.show{display:flex}
+.modal{background:var(--bg2);border:1px solid var(--border2);border-radius:var(--radius-lg);width:400px;
+  max-height:80vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.7);position:relative}
+.modal::before{content:'';position:absolute;inset:-1px;border-radius:var(--radius-lg);
+  background:linear-gradient(135deg,rgba(34,211,167,.2),rgba(77,166,255,.2),rgba(167,139,250,.2));
+  z-index:-1;opacity:.5}
+.modal-h{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;border-bottom:1px solid var(--border)}
+.modal-h h3{font-size:15px;font-weight:900;background:linear-gradient(135deg,var(--cyan),var(--blue));-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.modal-x{background:none;border:none;color:var(--text2);cursor:pointer;font-size:18px;transition:color .1s}
+.modal-x:hover{color:var(--text)}
+.modal-b{padding:18px}
+.fg{margin-bottom:14px}.fg label{display:block;font-size:10px;color:var(--text2);margin-bottom:4px;
+  text-transform:uppercase;letter-spacing:1px;font-weight:700}
+.fg input,.fg select{width:100%;padding:8px 12px;background:var(--bg3);border:1px solid var(--border2);
+  border-radius:var(--radius);color:var(--text);font-size:12px;font-family:inherit;transition:all .15s;font-weight:600}
+.fg input:focus{outline:none;border-color:var(--cyan);box-shadow:0 0 8px rgba(34,211,167,.15)}
+
+/* ── News Panel ─────────────────────────────────────────────────────────────── */
+.news-sentiment{background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius-lg);padding:10px;margin-bottom:2px}
+.ns-hdr{font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:2px;color:var(--text2);margin-bottom:6px}
+.ns-bars{margin-top:4px}
+.ns-bar{height:6px;border-radius:3px;display:flex;overflow:hidden;background:var(--bg5);gap:1px}
+.ns-fill.bull{background:linear-gradient(90deg,var(--green3),var(--green));border-radius:3px 0 0 3px;transition:width .6s}
+.ns-fill.bear{background:linear-gradient(90deg,var(--red),var(--red3));border-radius:0 3px 3px 0;transition:width .6s}
+.ns-labels{display:flex;justify-content:space-between;margin-top:3px;font-size:10px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.ns-bull{color:var(--green)}.ns-bear{color:var(--red)}
+.ns-verdict{margin-top:6px;padding:6px 8px;border-radius:var(--radius);font-size:11px;font-weight:600;line-height:1.3}
+
+.news-item{padding:8px 10px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
+  cursor:pointer;transition:all .15s;position:relative;overflow:hidden}
+.news-item:hover{border-color:var(--cyan);transform:translateX(2px)}
+.news-item::before{content:'';position:absolute;left:0;top:0;bottom:0;width:2px;border-radius:2px 0 0 2px}
+.news-item.bullish::before{background:var(--green)}.news-item.bearish::before{background:var(--red)}.news-item.neutral::before{background:var(--yellow)}
+.news-hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:3px}
+.news-title{font-size:12px;font-weight:700;color:var(--text);line-height:1.3;flex:1}
+.news-sent{font-size:8px;font-weight:800;padding:1px 6px;border-radius:var(--radius-sm);white-space:nowrap;flex-shrink:0;letter-spacing:.5px}
+.news-sent.bullish{background:var(--green-bg);color:var(--green)}
+.news-sent.bearish{background:var(--red-bg);color:var(--red)}
+.news-sent.neutral{background:rgba(251,191,36,.08);color:var(--yellow)}
+.news-meta{display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.news-source{font-size:9px;font-weight:700;color:var(--purple);background:rgba(167,139,250,.08);padding:1px 5px;border-radius:var(--radius-sm)}
+.news-time{font-size:9px;color:var(--text2);font-family:'JetBrains Mono',monospace}
+.news-coins{display:flex;gap:2px;flex-wrap:wrap}
+.news-coin{font-size:8px;font-weight:800;padding:1px 4px;border-radius:var(--radius-sm);background:rgba(77,166,255,.08);color:var(--blue);letter-spacing:.5px}
+.news-body{font-size:10px;color:var(--text2);line-height:1.3;margin-top:3px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.news-conf{font-size:8px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.news-conf.high{color:var(--green)}.news-conf.med{color:var(--yellow)}.news-conf.low{color:var(--text3)}
+
+/* ── Scrollbar ──────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--bg5);border-radius:2px}
+::-webkit-scrollbar-thumb:hover{background:var(--border2)}
+
+/* ── Candle Info Popup ──────────────────────────────────────────────────────── */
+.candle-info{position:absolute;top:36px;left:12px;background:var(--glass2);border:1px solid var(--border2);
+  border-radius:var(--radius);padding:8px 12px;z-index:50;pointer-events:none;
+  backdrop-filter:blur(8px);min-width:160px;box-shadow:0 4px 20px rgba(0,0,0,.4)}
+.ci-row{display:flex;justify-content:space-between;gap:16px;padding:2px 0;font-size:11px}
+.ci-l{color:var(--text2);font-weight:600;font-size:10px}.ci-v{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--text)}
+.ci-hi{color:var(--green)}.ci-lo{color:var(--red)}
+
+/* ── Trade Buttons in Header ────────────────────────────────────────────────── */
+.trade-btn{padding:6px 16px;border:none;border-radius:var(--radius-sm);font-weight:900;font-size:11px;
+  cursor:pointer;font-family:inherit;transition:all .15s;letter-spacing:1px;text-transform:uppercase}
+.buy-btn{background:linear-gradient(135deg,var(--green3),var(--green));color:#000}
+.buy-btn:hover{box-shadow:0 0 20px rgba(34,232,122,.4);transform:translateY(-1px)}
+.sell-btn{background:linear-gradient(135deg,var(--red3),var(--red));color:#fff}
+.sell-btn:hover{box-shadow:0 0 20px rgba(255,77,90,.4);transform:translateY(-1px)}
+.trade-btn:active{transform:translateY(0)}
+
+/* ── Hints Panel ────────────────────────────────────────────────────────────── */
+.hints-hdr{padding:10px 12px;background:linear-gradient(135deg,rgba(34,232,122,.06),rgba(255,77,90,.06));
+  border:1px solid var(--border);border-radius:var(--radius-lg);margin-bottom:4px}
+.hints-title{display:block;font-size:12px;font-weight:900;background:linear-gradient(135deg,var(--green),var(--cyan),var(--red));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:1.5px}
+.hints-sub{display:block;font-size:9px;color:var(--text2);margin-top:2px;font-weight:500}
+
+.hint-card{padding:10px 12px;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);
+  transition:all .15s;cursor:pointer;position:relative;overflow:hidden}
+.hint-card:hover{border-color:var(--border2);transform:translateX(2px)}
+.hint-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:3px 0 0 3px}
+.hint-card.buy::before{background:linear-gradient(180deg,var(--green),var(--green3))}
+.hint-card.sell::before{background:linear-gradient(180deg,var(--red),var(--red3))}
+.hint-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.hint-sym{font-weight:900;font-size:14px;color:var(--text)}
+.hint-side{font-size:10px;font-weight:900;padding:2px 10px;border-radius:var(--radius-sm);letter-spacing:1px}
+.hint-side.buy{background:var(--green-bg);color:var(--green)}
+.hint-side.sell{background:var(--red-bg);color:var(--red)}
+.hint-conf{font-size:20px;font-weight:900;font-family:'JetBrains Mono',monospace;margin:2px 0}
+.hint-conf.buy{color:var(--green)}.hint-conf.sell{color:var(--red)}
+.hint-prices{display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;margin:6px 0;font-size:10px}
+.hint-prices .hl{color:var(--text3);font-weight:600;font-size:9px;text-transform:uppercase;letter-spacing:.5px}
+.hint-prices .hv{font-family:'JetBrains Mono',monospace;font-weight:700;color:var(--text);font-size:11px}
+.hint-reasons{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+.hint-reason{font-size:8px;font-weight:700;padding:2px 5px;border-radius:var(--radius-sm);background:var(--bg4);color:var(--text2);letter-spacing:.3px}
+.hint-rr{position:absolute;top:10px;right:12px;font-size:9px;font-weight:800;color:var(--yellow);font-family:'JetBrains Mono',monospace}
+</style>
+</head>
+<body>
+<div class="app">
+
+<header>
+  <div class="logo">BOT TRADING<span class="logo-sub">AI TERMINAL</span></div>
+  <div class="conn"><span class="conn-dot" id="cDot"></span><span id="cText">Connecting...</span></div>
+  <div class="hdr-sep"></div>
+  <div class="hdr-controls">
+    <button class="btn start" id="btnRun" onclick="api('/api/start','POST')">START</button>
+    <button class="btn paper" id="btnPaper" onclick="api('/api/toggle-paper','POST')">PAPER</button>
+    <button class="btn ai-on" id="btnAI" onclick="api('/api/toggle-ai','POST')">AI</button>
+    <button class="btn auto" id="btnAuto" onclick="api('/api/toggle-auto','POST')">AUTO</button>
+    <button class="btn trial-btn" id="btnTrial" onclick="toggleTrial()">TRIAL</button>
+    <button class="btn" onclick="openModal()">CONFIG</button>
+  </div>
+  <div class="hdr-sep"></div>
+  <div class="hdr-stats">
+    <div class="hdr-stat"><span class="l">Balance</span><span class="v b" id="hBal">$0</span></div>
+    <div class="hdr-stat"><span class="l">Equity</span><span class="v" id="hEq">$0</span></div>
+    <div class="hdr-stat"><span class="l">P&L</span><span class="v" id="hPnl">$0</span></div>
+    <div class="hdr-stat" id="trialStat" style="display:none"><span class="l">Trial</span><span class="v" id="hTrial" style="color:var(--purple)">$100K</span></div>
+    <div class="hdr-stat"><span class="l">Win Rate</span><span class="v" id="hWR">0%</span></div>
+    <div class="hdr-stat"><span class="l">PF</span><span class="v" id="hPF">0</span></div>
+    <div class="hdr-stat"><span class="l">Drawdown</span><span class="v" id="hDD">0%</span></div>
+  </div>
+</header>
+
+<div class="ticker-tape">
+  <div class="tape-track" id="tapeTrack"></div>
+</div>
+
+<div class="left">
+  <div class="panel-hdr"><span><span class="ico">&#9733;</span> Watchlist</span><span class="cnt" id="wlc">0</span></div>
+  <div class="asset-filter">
+    <button class="af-btn on" data-asset="all" onclick="filterAsset('all')">ALL</button>
+    <button class="af-btn" data-asset="crypto" onclick="filterAsset('crypto')">CRYPTO</button>
+    <button class="af-btn" data-asset="stock" onclick="filterAsset('stock')">STOCKS</button>
+  </div>
+  <div class="watchlist" id="wl"></div>
+  <div class="panel-hdr"><span><span class="ico">&#9632;</span> Market Heatmap</span></div>
+  <div class="heatmap" id="hm"></div>
+  <div class="panel-hdr"><span><span class="ico">&#9881;</span> Portfolio</span></div>
+  <div class="left-bot">
+    <div class="mini"><span class="l">Risk/Trade</span><span class="v" id="mRisk">1%</span></div>
+    <div class="mini"><span class="l">Stop Loss</span><span class="v" id="mSL">1.0 ATR</span></div>
+    <div class="mini"><span class="l">Take Profit</span><span class="v" id="mTP">2.0 ATR</span></div>
+    <div class="mini"><span class="l">Score Threshold</span><span class="v" id="mScore">5</span></div>
+    <div class="mini"><span class="l">Positions</span><span class="v" id="mPos">0/5</span></div>
+    <div class="mini"><span class="l">Wins / Losses</span><span class="v"><span id="mCW" style="color:var(--green)">0</span> / <span id="mCL" style="color:var(--red)">0</span></span></div>
+    <div class="mini"><span class="l">Expectancy</span><span class="v" id="mExp">$0</span></div>
+  </div>
+</div>
+
+<div class="center">
+  <div class="top-bar">
+    <div class="sym-info">
+      <span class="sym-name" id="cSym">BTC/USDT</span>
+      <span class="sym-price" id="cPrice">$0</span>
+      <span class="sym-chg p" id="cChg">0%</span>
+    </div>
+    <div class="sym-extra">
+      <span>Vol <b id="cVol">0</b></span>
+      <span>24hH <b id="cHi" style="color:var(--green)">0</b></span>
+      <span>24hL <b id="cLo" style="color:var(--red)">0</b></span>
+      <span>ATR <b id="cAtr">-</b></span>
+      <span>VWAP <b id="cVwap">-</b></span>
+    </div>
+    <div class="tf-row">
+      <button class="tf" data-tf="5">5m</button>
+      <button class="tf on" data-tf="15">15m</button>
+      <button class="tf" data-tf="60">1H</button>
+      <button class="tf" data-tf="240">4H</button>
+      <button class="tf" data-tf="D">1D</button>
+    </div>
+    <div class="hdr-sep" style="height:20px"></div>
+    <button class="trade-btn buy-btn" onclick="executeTrade('long')">&#9650; BUY</button>
+    <button class="trade-btn sell-btn" onclick="executeTrade('short')">&#9660; SELL</button>
+  </div>
+  <div class="ind-bar">
+    <div class="ind"><span class="l">EMA9</span><span class="v" id="xEma9">-</span></div>
+    <div class="ind"><span class="l">EMA21</span><span class="v" id="xEma21">-</span></div>
+    <div class="ind"><span class="l">EMA200</span><span class="v" id="xEma200">-</span></div>
+    <div class="ind"><span class="l">RSI</span><span class="v" id="xRsi">-</span></div>
+    <div class="ind"><span class="l">MACD</span><span class="v" id="xMacd">-</span></div>
+    <div class="ind"><span class="l">BB</span><span class="v" id="xBB">-</span></div>
+    <div class="ind"><span class="l">StochRSI</span><span class="v" id="xStoch">-</span></div>
+    <div class="ind"><span class="l">ST</span><span class="v" id="xST">-</span></div>
+    <div class="ind"><span class="l">Trend</span><span class="v" id="xTrend">-</span></div>
+    <div class="ind"><span class="l">Str</span><span class="v" id="xStr">-</span></div>
+  </div>
+  <div class="chart-wrap" style="flex:3;position:relative">
+    <div class="chart-label">PRICE</div>
+    <div id="cMain"></div>
+    <div class="candle-info" id="candleInfo" style="display:none">
+      <div class="ci-row"><span class="ci-l">Time</span><span class="ci-v" id="ciTime">-</span></div>
+      <div class="ci-row"><span class="ci-l">Open</span><span class="ci-v" id="ciOpen">-</span></div>
+      <div class="ci-row"><span class="ci-l">High</span><span class="ci-v ci-hi" id="ciHigh">-</span></div>
+      <div class="ci-row"><span class="ci-l">Low</span><span class="ci-v ci-lo" id="ciLow">-</span></div>
+      <div class="ci-row"><span class="ci-l">Close</span><span class="ci-v" id="ciClose">-</span></div>
+      <div class="ci-row"><span class="ci-l">Volume</span><span class="ci-v" id="ciVol">-</span></div>
+      <div class="ci-row"><span class="ci-l">Change</span><span class="ci-v" id="ciChg">-</span></div>
+    </div>
+  </div>
+  <div class="chart-wrap" style="flex:1"><div class="chart-label">RSI (14)</div><div id="cRsi"></div></div>
+  <div class="chart-wrap" style="flex:1"><div class="chart-label">MACD (12, 26, 9)</div><div id="cMacd"></div></div>
+</div>
+
+<div class="right">
+  <div class="rtabs">
+    <div class="rtab on" data-rp="ai">&#9733; AI</div>
+    <div class="rtab" data-rp="hints">&#9670; Hints</div>
+    <div class="rtab" data-rp="trade">&#9876; Trade</div>
+    <div class="rtab" data-rp="positions">&#9776; Pos</div>
+    <div class="rtab" data-rp="news">&#9783; News</div>
+    <div class="rtab" data-rp="book">&#9783; Book</div>
+    <div class="rtab" data-rp="signals">&#9881; Log</div>
+    <div class="rtab" data-rp="history">&#9716; Hist</div>
+  </div>
+
+  <div class="rp on" id="rp-ai">
+    <div class="ai-glass">
+      <div class="ai-hdr"><span class="ai-title">CLAUDE AI ENGINE</span><span class="ai-badge on" id="aiBadge">ACTIVE</span></div>
+      <div class="ai-grid">
+        <div class="ai-cell"><div class="l">Decisions</div><div class="v" id="aiDec">0</div></div>
+        <div class="ai-cell"><div class="l">Approval</div><div class="v" id="aiApp">0%</div></div>
+        <div class="ai-cell"><div class="l">Confidence</div><div class="v" id="aiConf">0%</div></div>
+        <div class="ai-cell"><div class="l">Last Signal</div><div class="v" id="aiLast" style="font-size:9px">None</div></div>
+      </div>
+      <div class="ai-rec" id="aiRec">Analyzing market conditions...</div>
+    </div>
+    <div class="gauge-box">
+      <svg class="gauge-svg" viewBox="0 0 140 70">
+        <path class="gauge-bg" d="M10,65 A60,60 0 0,1 130,65"/>
+        <path class="gauge-fill" id="gArc" d="M10,65 A60,60 0 0,1 130,65" stroke="var(--green)" stroke-dasharray="188" stroke-dashoffset="188"/>
+      </svg>
+      <div class="gauge-val" id="gVal">0%</div>
+      <div class="gauge-sub">Risk Utilization</div>
+    </div>
+    <div class="panel-hdr" style="margin-top:6px"><span><span class="ico">&#128269;</span> AI Opportunities</span></div>
+    <div id="oppList"><div class="empty">Scanning markets...</div></div>
+    <div class="panel-hdr" style="margin-top:6px"><span><span class="ico">&#9888;</span> Risk Rules</span></div>
+    <div class="rules">
+      <div class="rule"><span class="rule-dot"></span>Max 1% risk per trade</div>
+      <div class="rule"><span class="rule-dot"></span>5% daily drawdown limit</div>
+      <div class="rule"><span class="rule-dot"></span>10% monthly drawdown limit</div>
+      <div class="rule"><span class="rule-dot"></span>200 EMA trend filter</div>
+      <div class="rule"><span class="rule-dot"></span>3/4 MTF alignment required</div>
+      <div class="rule"><span class="rule-dot"></span>5-bar cooldown between trades</div>
+      <div class="rule"><span class="rule-dot"></span>End-of-day auto-close</div>
+      <div class="rule"><span class="rule-dot"></span>Hard loss stop at 1.5%</div>
+    </div>
+  </div>
+
+  <div class="rp" id="rp-trade">
+    <div class="exec">
+      <div class="exec-title">&#9876; Manual Trade</div>
+      <div class="exec-row">
+        <button class="exec-btn buy" onclick="executeTrade('long')">BUY / LONG</button>
+        <button class="exec-btn sell" onclick="executeTrade('short')">SELL / SHORT</button>
+      </div>
+      <div style="font-size:10px;color:var(--text2);text-align:center;margin-top:4px;font-weight:600">AI reviews before execution</div>
+    </div>
+    <div id="trialTradeBox" style="display:none">
+      <div class="exec" style="border-color:var(--purple);background:rgba(124,58,237,.04)">
+        <div class="exec-title" style="color:var(--purple)">&#9733; Trial Trade</div>
+        <div class="exec-row">
+          <button class="exec-btn buy" onclick="trialTrade('buy')" style="border-color:var(--green);background:rgba(34,232,122,.08)">TRIAL BUY</button>
+          <button class="exec-btn sell" onclick="trialTrade('sell')" style="border-color:var(--red);background:rgba(255,77,90,.08)">TRIAL SELL</button>
+        </div>
+        <div style="font-size:10px;color:var(--text2);text-align:center;margin-top:4px;font-weight:600">Virtual $100K balance — no real money</div>
+      </div>
+      <div id="trialPositions" style="padding:8px 0"></div>
+    </div>
+    <div class="panel-hdr" style="margin-top:8px"><span><span class="ico">&#9733;</span> AI Analysis</span></div>
+    <div id="manualAI" style="padding:8px"><div class="empty">Click BUY/SELL to get AI analysis</div></div>
+  </div>
+
+  <div class="rp" id="rp-hints">
+    <div class="hints-hdr">
+      <span class="hints-title">&#9670; AI TRADING HINTS</span>
+      <span class="hints-sub">High-confidence signals across all pairs</span>
+    </div>
+    <div id="hintsList"><div class="empty">Scanning for signals...</div></div>
+  </div>
+
+  <div class="rp" id="rp-positions">
+    <div class="empty" id="emptyPos">No open positions</div>
+    <div id="posList"></div>
+  </div>
+
+  <div class="rp" id="rp-news">
+    <div class="news-sentiment" id="newsSentiment">
+      <div class="ns-hdr">&#128200; MARKET SENTIMENT</div>
+      <div class="ns-bars">
+        <div class="ns-bar">
+          <div class="ns-fill bull" id="nsBull" style="width:50%"></div>
+          <div class="ns-fill bear" id="nsBear" style="width:50%"></div>
+        </div>
+        <div class="ns-labels">
+          <span class="ns-bull" id="nsBullPct">50% Bullish</span>
+          <span class="ns-bear" id="nsBearPct">50% Bearish</span>
+        </div>
+      </div>
+      <div class="ns-verdict" id="nsVerdict" style="background:rgba(77,166,255,.04);border:1px solid rgba(77,166,255,.12);color:var(--blue)">Neutral — Mixed signals across crypto news</div>
+    </div>
+    <div class="panel-hdr" style="margin-top:2px"><span><span class="ico">&#128240;</span> Live News</span><span class="cnt" id="newsCnt">0</span></div>
+    <div id="newsList"><div class="empty">Loading news feed...</div></div>
+  </div>
+
+  <div class="rp" id="rp-book">
+    <div id="obData"><div class="empty">Loading order book...</div></div>
+  </div>
+
+  <div class="rp" id="rp-signals">
+    <div id="sigList"><div class="empty">Waiting for signals...</div></div>
+  </div>
+
+  <div class="rp" id="rp-history">
+    <div id="trList"><div class="empty">No trade history</div></div>
+  </div>
+</div>
+
+</div>
+
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <div class="modal-h"><h3>&#9881; Terminal Configuration</h3><button class="modal-x" onclick="closeModal()">&times;</button></div>
+    <div class="modal-b">
+      <div class="fg"><label>Risk Per Trade (%)</label><input type="number" id="sRisk" value="1.0" step="0.1"></div>
+      <div class="fg"><label>Max Positions</label><input type="number" id="sMaxPos" value="5" min="1" max="10"></div>
+      <div class="fg"><label>SL ATR Multiplier</label><input type="number" id="sSL" value="1.0" step="0.1"></div>
+      <div class="fg"><label>TP ATR Multiplier</label><input type="number" id="sTP" value="2.0" step="0.1"></div>
+      <div class="fg"><label>Score Threshold (1-5)</label><input type="number" id="sScore" value="5" min="1" max="5"></div>
+      <div class="fg"><label>Timeframe</label><select id="sTF"><option value="5">5m</option><option value="15" selected>15m</option><option value="60">1H</option><option value="240">4H</option></select></div>
+      <div class="fg"><label>Watchlist</label><input type="text" id="sPairs" value="BTC/USDT, ETH/USDT, SOL/USDT, BNB/USDT, XRP/USDT"></div>
+      <button class="btn start" style="width:100%;padding:10px;margin-top:6px;font-size:11px" onclick="saveCfg()">SAVE CONFIGURATION</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

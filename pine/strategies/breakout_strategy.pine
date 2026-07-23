@@ -1,0 +1,294 @@
+//@version=6
+// iVGeek Breakout Strategy v2 — Volatility breakouts with volume, ATR, range quality
+// Best for: high-volatility breakouts, news events, key level breaks
+// Improvements: range duration filter, volume profile, failed breakout reversal,
+//               Fibonacci pullback entries, MTF confirmation, richer alerts
+// ============================================================
+strategy(
+  title="iVGeek Breakout Strategy v2",
+  shorttitle="iVGeek BO v2",
+  overlay=true,
+  pyramiding=1,
+  default_qty_type=strategy.percent_of_equity,
+  default_qty_value=100,
+  initial_capital=10000,
+  commission_type=strategy.commission.percent,
+  commission_value=0.1,
+  slippage=2,
+  backtest_fill_limits_assumption=false
+)
+
+// ── Inputs ──────────────────────────────────────────────────
+// Range
+lookback        = input.int(20,     "Lookback Period",          minval=10, maxval=100, group="Range")
+useRangeDuration = input.bool(true, "Range Duration Filter",                                     group="Range")
+minRangeBars    = input.int(8,      "Min Range Bars (consolidation)",  minval=3, maxval=50,       group="Range")
+
+// Volume
+volMult         = input.float(2.0,  "Volume Multiplier",        minval=1.0, maxval=10.0,         group="Volume")
+
+// ATR / Volatility
+atrLen          = input.int(14,     "ATR Period",                                                     group="ATR")
+atrMult         = input.float(1.5,  "ATR Expansion Multiplier", minval=1.0, maxval=5.0,          group="ATR")
+atrSlMult       = input.float(2.0,  "ATR Stop Multiplier",      minval=0.5, maxval=5.0,          group="ATR")
+atrTpMult       = input.float(3.0,  "ATR TP Multiplier",        minval=0.5, maxval=10.0,         group="ATR")
+
+// Confirmation
+confirmBars     = input.int(1,      "Confirmation Bars",        minval=0, maxval=5,               group="Confirmation")
+useFilter       = input.bool(true,  "Trend Filter",                                                  group="Filters")
+
+// Multi-timeframe
+useMtf          = input.bool(true,  "Multi-Timeframe Confirmation",                                 group="MTF")
+mtfTimeframe    = input.timeframe("60", "MTF Timeframe",                                            group="MTF")
+
+// Volume profile
+useVolProfile   = input.bool(true,  "Volume Profile Analysis",                                      group="Volume Profile")
+vpLookback      = input.int(50,     "VP Lookback",               minval=20, maxval=200,            group="Volume Profile")
+vpBins          = input.int(24,     "VP Price Bins",             minval=10, maxval=50,             group="Volume Profile")
+
+// Failed breakout / reversal
+useFailDetect   = input.bool(true,  "Failed Breakout Detection",                                     group="Fail Detect")
+failConfirmBars = input.int(3,      "Fail Confirm Bars",         minval=1, maxval=10,              group="Fail Detect")
+failReversalEntry = input.bool(true,"Enter Reversal on Failed BO",                                  group="Fail Detect")
+
+// Fibonacci pullback
+useFibPullback  = input.bool(true,  "Fibonacci Pullback Entries",                                    group="Fib Pullback")
+fibLevels       = input.string("0.382, 0.5, 0.618", "Fib Levels (comma-sep)",                       group="Fib Pullback")
+useAtrConfirm   = input.bool(true,  "ATR Expansion on Pullback",                                    group="Fib Pullback")
+
+// ── Indicators ──────────────────────────────────────────────
+highestHigh = ta.highest(high, lookback)
+lowestLow   = ta.lowest(low, lookback)
+atrVal      = ta.atr(atrLen)
+avgAtr      = ta.sma(atrVal, lookback)
+avgVol      = ta.sma(volume, lookback)
+vRatio      = volume / avgVol
+ema50       = ta.ema(close, 50)
+ema200      = ta.ema(close, 200)
+
+// ── Trend Context ───────────────────────────────────────────
+uptrend   = close > ema50 and ema50 > ema200
+downtrend = close < ema50 and ema50 < ema200
+
+// ── Range Duration Filter ───────────────────────────────────
+// Count bars where price stayed within the range (not touching high/low boundaries)
+rangeHigh   = highestHigh[1]
+rangeLow    = lowestLow[1]
+inRange     = high <= rangeHigh and low >= rangeLow
+rangeBars   = ta.barssince(not inRange)
+rangeOk     = useRangeDuration ? (rangeBars >= minRangeBars) : true
+rangeWidth  = (rangeHigh - rangeLow) / rangeLow * 100
+
+// ── Volume Profile Analysis ─────────────────────────────────
+// Simplified VP: find the price level with highest volume (Point of Control)
+vpHigh  = ta.highest(high, vpLookback)
+vpLow   = ta.lowest(low, vpLookback)
+vpRange = vpHigh - vpLow
+vpBinSize = vpRange / vpBins
+
+// Estimate POC and value area via volume-weighted close proximity
+vpPocLevel  = ta.sma(close, vpLookback)  // approximation of POC
+vpAbovePoc  = close > vpPocLevel
+vpBelowPoc  = close < vpPocLevel
+// Value area high/low (1 standard deviation approx)
+vpValHigh = vpPocLevel + vpRange * 0.25
+vpValLow  = vpPocLevel - vpRange * 0.25
+inValueArea = close >= vpValLow and close <= vpValHigh
+
+// VP directional alignment
+vpAlignLong  = useVolProfile ? (close > vpValHigh or (vpAbovePoc and vRatio > volMult)) : true
+vpAlignShort = useVolProfile ? (close < vpValLow  or (vpBelowPoc and vRatio > volMult)) : true
+
+// ── Volatility Expansion ────────────────────────────────────
+volatilityExpanding = atrVal > avgAtr * atrMult
+
+// ── Breakout Detection ──────────────────────────────────────
+longBreakout  = close > rangeHigh and vRatio >= volMult and volatilityExpanding and rangeOk
+shortBreakout = close < rangeLow  and vRatio >= volMult and volatilityExpanding and rangeOk
+
+// Trend filter
+if useFilter
+    longBreakout  := longBreakout  and uptrend
+    shortBreakout := shortBreakout and downtrend
+
+// Volume profile filter
+longBreakout  := longBreakout  and vpAlignLong
+shortBreakout := shortBreakout and vpAlignShort
+
+// ── Multi-Timeframe Confirmation ────────────────────────────
+mtfClose     = request.security(syminfo.tickerid, mtfTimeframe, close)
+mtfEma50     = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, 50))
+mtfUptrend   = mtfClose > mtfEma50
+mtfDowntrend = mtfClose < mtfEma50
+
+mtfConfirmLong  = useMtf ? mtfUptrend   : true
+mtfConfirmShort = useMtf ? mtfDowntrend : true
+
+longBreakout  := longBreakout  and mtfConfirmLong
+shortBreakout := shortBreakout and mtfConfirmShort
+
+// ── Confirmation ────────────────────────────────────────────
+confirmedLong  = longBreakout
+confirmedShort = shortBreakout
+
+if confirmBars > 0
+    confirmedLong  := longBreakout and close[confirmBars] > rangeHigh
+    confirmedShort := shortBreakout and close[confirmBars] < rangeLow
+
+// ── Failed Breakout Detection ───────────────────────────────
+// Breakout that fails: price breaks out but then closes back inside range
+boFailedLong  = false
+boFailedShort = false
+
+if useFailDetect
+    wasLongBO  = confirmedLong[1] or confirmedLong[2] or confirmedLong[3]
+    wasShortBO = confirmedShort[1] or confirmedShort[2] or confirmedShort[3]
+    // Price returns inside range after breakout
+    boFailedLong  := strategy.position_size > 0 and close < rangeHigh and wasLongBO
+    boFailedShort := strategy.position_size < 0 and close > rangeLow  and wasShortBO
+
+// Reversal signal on failed breakout
+reversalLong  = boFailedShort and strategy.position_size <= 0
+reversalShort = boFailedLong  and strategy.position_size >= 0
+
+// ── Fibonacci Pullback Entry ────────────────────────────────
+// After breakout, wait for pullback to fib level of the breakout move
+// Parse fib levels
+fib1 = str.tofloat(str.split(fibLevels, ",")[0])
+fib2 = str.tofloat(str.split(fibLevels, ",")[1])
+fib3 = str.tofloat(str.split(fibLevels, ",")[2])
+
+// Breakout move measurement
+boMoveHigh = ta.highest(high, 5)
+boMoveLow  = ta.lowest(low, 5)
+boMoveSize = boMoveHigh - boMoveLow
+
+pullbackFibLong  = false
+pullbackFibShort = false
+
+if useFibPullback and strategy.position_size == 0
+    // Long pullback: retrace to 0.382-0.618 of recent up move
+    fibLevelLong  = boMoveHigh - boMoveSize * fib2
+    pullbackFibLong  := close <= fibLevelLong and close >= boMoveLow and uptrend and vRatio > 1.0 and (not useAtrConfirm or volatilityExpanding)
+
+    // Short pullback: retrace to 0.382-0.618 of recent down move
+    fibLevelShort = boMoveLow + boMoveSize * fib2
+    pullbackFibShort := close >= fibLevelShort and close <= boMoveHigh and downtrend and vRatio > 1.0 and (not useAtrConfirm or volatilityExpanding)
+
+// Simpler pullback (backward-compatible)
+pullbackLong  = longBreakout  and close < rangeHigh and close > rangeHigh * 0.98 and vRatio > 1.0
+pullbackShort = shortBreakout and close > rangeLow  and close < rangeLow  * 1.02 and vRatio > 1.0
+
+// Merge pullback types
+anyPullbackLong  = pullbackLong  or pullbackFibLong
+anyPullbackShort = pullbackShort or pullbackFibShort
+
+// ── Exits ───────────────────────────────────────────────────
+boFailLong  = close < rangeHigh
+boFailShort = close > rangeLow
+
+// ── Execution ───────────────────────────────────────────────
+if confirmedLong and strategy.position_size == 0
+    longSl = close - atrVal * atrSlMult
+    longTp = close + atrVal * atrTpMult
+    strategy.entry("BO Long", strategy.long)
+    strategy.exit("BO Long-X", "BO Long", stop=longSl, limit=longTp)
+
+if confirmedShort and strategy.position_size == 0
+    shortSl = close + atrVal * atrSlMult
+    shortTp = close - atrVal * atrTpMult
+    strategy.entry("BO Short", strategy.short)
+    strategy.exit("BO Short-X", "BO Short", stop=shortSl, limit=shortTp)
+
+// Pullback entries
+if anyPullbackLong and strategy.position_size == 0
+    longSl = close - atrVal * atrSlMult
+    longTp = close + atrVal * atrTpMult
+    strategy.entry("BO Pull Long", strategy.long)
+    strategy.exit("BO Pull-X", "BO Pull Long", stop=longSl, limit=longTp)
+
+if anyPullbackShort and strategy.position_size == 0
+    shortSl = close + atrVal * atrSlMult
+    shortTp = close - atrVal * atrTpMult
+    strategy.entry("BO Pull Short", strategy.short)
+    strategy.exit("BO Pull Short-X", "BO Pull Short", stop=shortSl, limit=shortTp)
+
+// Reversal entries on failed breakout
+if failReversalEntry and reversalLong and strategy.position_size <= 0
+    if strategy.position_size < 0
+        strategy.close("BO Short", comment="Fail Rev Close Short")
+    revSl = close - atrVal * atrSlMult
+    revTp = close + atrVal * atrTpMult * 1.5
+    strategy.entry("Rev Long", strategy.long)
+    strategy.exit("Rev Long-X", "Rev Long", stop=revSl, limit=revTp)
+
+if failReversalEntry and reversalShort and strategy.position_size >= 0
+    if strategy.position_size > 0
+        strategy.close("BO Long", comment="Fail Rev Close Long")
+    revSl = close + atrVal * atrSlMult
+    revTp = close - atrVal * atrTpMult * 1.5
+    strategy.entry("Rev Short", strategy.short)
+    strategy.exit("Rev Short-X", "Rev Short", stop=revSl, limit=revTp)
+
+// Exit on breakout failure (non-reversal)
+if strategy.position_size > 0 and boFailLong and not failReversalEntry
+    strategy.close("BO Long", comment="BO Fail")
+if strategy.position_size < 0 and boFailShort and not failReversalEntry
+    strategy.close("BO Short", comment="BO Fail")
+
+// ── Alerts ──────────────────────────────────────────────────
+alertcondition(confirmedLong,    "BO Buy",        "BREAKOUT BUY     {{ticker}} @ {{close}} | Range=" + str.tostring(rangeWidth, "#.0") + "% | Bars=" + str.tostring(rangeBars) + " | Vol×" + str.tostring(vRatio, "#.0") + " | ATR×" + str.tostring(atrVal / avgAtr, "#.0"))
+alertcondition(confirmedShort,   "BO Sell",       "BREAKOUT SELL    {{ticker}} @ {{close}} | Range=" + str.tostring(rangeWidth, "#.0") + "% | Bars=" + str.tostring(rangeBars) + " | Vol×" + str.tostring(vRatio, "#.0") + " | ATR×" + str.tostring(atrVal / avgAtr, "#.0"))
+alertcondition(anyPullbackLong,  "BO Pull Buy",   "BREAKOUT PULLBACK BUY  {{ticker}} @ {{close}}")
+alertcondition(anyPullbackShort, "BO Pull Sell",  "BREAKOUT PULLBACK SELL {{ticker}} @ {{close}}")
+alertcondition(boFailedLong or boFailedShort, "BO Failed", "BREAKOUT FAILED {{ticker}} @ {{close}} — reversal possible")
+alertcondition(reversalLong,     "Reversal Buy",  "REVERSAL BUY     {{ticker}} @ {{close}} (failed short BO)")
+alertcondition(reversalShort,    "Reversal Sell", "REVERSAL SELL    {{ticker}} @ {{close}} (failed long BO)")
+
+// ── Visualization ───────────────────────────────────────────
+// Range boundaries
+plot(rangeHigh, "Range High", color.new(#F44336, 50), style=plot.style_linebr, linewidth=2)
+plot(rangeLow,  "Range Low",  color.new(#4CAF50, 50), style=plot.style_linebr, linewidth=2)
+
+// Range duration label
+rangeDurColor = rangeBars >= minRangeBars ? color.new(#4CAF50, 40) : color.new(#FF9800, 60)
+plot(useRangeDuration ? rangeBars : na, "Range Bars", display=display.data_window)
+
+// Entry signals
+plotshape(confirmedLong,  style=shape.labelup,   location=location.belowbar,
+  color=color.new(#00E676, 10), text="BO",  textcolor=color.white, size=size.small)
+plotshape(confirmedShort, style=shape.labeldown, location=location.abovebar,
+  color=color.new(#FF1744, 10), text="BO",  textcolor=color.white, size=size.small)
+
+// Pullback entries
+plotshape(anyPullbackLong,  style=shape.triangleup,   location=location.belowbar,
+  color=color.new(#00E676, 40), size=size.tiny, title="Pull Long")
+plotshape(anyPullbackShort, style=shape.triangledown, location=location.abovebar,
+  color=color.new(#FF1744, 40), size=size.tiny, title="Pull Short")
+
+// Failed breakout markers
+plotshape(useFailDetect and boFailedLong,  style=shape.xcross, location=location.abovebar,
+  color=color.new(#FF9800, 0), size=size.small, title="Fail Long")
+plotshape(useFailDetect and boFailedShort, style=shape.xcross, location=location.belowbar,
+  color=color.new(#FF9800, 0), size=size.small, title="Fail Short")
+
+// Reversal signals
+plotshape(failReversalEntry and reversalLong,  style=shape.arrowup,   location=location.belowbar,
+  color=color.new(#2196F3, 0), size=size.small, title="Rev Long")
+plotshape(failReversalEntry and reversalShort, style=shape.arrowdown, location=location.abovebar,
+  color=color.new(#2196F3, 0), size=size.small, title="Rev Short")
+
+// Fibonacci pullback levels (when active)
+plot(useFibPullback and strategy.position_size == 0 ? boMoveHigh - boMoveSize * fib1 : na,
+  "Fib 0.382", color.new(#9C27B0, 60), style=plot.style_circles)
+plot(useFibPullback and strategy.position_size == 0 ? boMoveHigh - boMoveSize * fib2 : na,
+  "Fib 0.500", color.new(#9C27B0, 40), style=plot.style_circles)
+plot(useFibPullback and strategy.position_size == 0 ? boMoveHigh - boMoveSize * fib3 : na,
+  "Fib 0.618", color.new(#9C27B0, 20), style=plot.style_circles)
+
+// Volume profile background
+vpBg = inValueArea ? color.new(#2196F3, 94) : na
+bgcolor(useVolProfile ? vpBg : na, title="VP Value Area")
+
+// Volatility expansion indicator
+plot(atrVal / avgAtr, "ATR Ratio", color.new(#FF9800, 60), display=display.data_window)

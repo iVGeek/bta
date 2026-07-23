@@ -1,0 +1,210 @@
+//@version=6
+// iVGeek Momentum Strategy v2 — Trend-following with EMA/RSI/MACD confluence
+// Best for: trending markets with strong directional moves
+// Improvements: ADX filter, volume pressure, MTF confluence, signal scoring,
+//               trailing stop with activation, RR filter, richer alerts
+// ============================================================
+strategy(
+  title="iVGeek Momentum Strategy v2",
+  shorttitle="iVGeek Mo v2",
+  overlay=true,
+  pyramiding=1,
+  default_qty_type=strategy.percent_of_equity,
+  default_qty_value=100,
+  initial_capital=10000,
+  commission_type=strategy.commission.percent,
+  commission_value=0.1,
+  slippage=2
+)
+
+// ── Inputs ──────────────────────────────────────────────────
+// EMA
+emaFast   = input.int(9,   "Fast EMA",          group="EMAs")
+emaMid    = input.int(21,  "Medium EMA",        group="EMAs")
+emaSlow   = input.int(50,  "Slow EMA",          group="EMAs")
+emaTrend  = input.int(200, "Trend EMA",         group="EMAs")
+
+// RSI
+rsiLen    = input.int(14,  "RSI Period",        group="RSI")
+rsiMin    = input.int(50,  "RSI Min (Long)",    group="RSI")
+rsiMax    = input.int(50,  "RSI Max (Short)",   group="RSI")
+
+// MACD
+macdFast  = input.int(12,  "MACD Fast",         group="MACD")
+macdSlow  = input.int(26,  "MACD Slow",         group="MACD")
+macdSig   = input.int(9,   "MACD Signal",       group="MACD")
+
+// Volume
+volMult   = input.float(1.5, "Volume Multiplier", minval=1.0, group="Volume")
+
+// Filters
+useTrendFilter   = input.bool(true,  "Trend Filter (EMA stack)",          group="Filters")
+useAdxFilter     = input.bool(true,  "ADX Trend Strength Filter",         group="Filters")
+adxLen           = input.int(14,     "ADX Period",                        group="Filters")
+adxThreshold     = input.float(25.0, "ADX Min Threshold", minval=10,     group="Filters")
+adxStrong        = input.float(40.0, "ADX Strong Trend",  minval=20,     group="Filters")
+
+// Multi-timeframe EMA confluence
+useMtfConfluence = input.bool(true,  "Multi-Timeframe EMA Confluence",    group="MTF Confluence")
+mtfTimeframe     = input.timeframe("60", "MTF Timeframe",                 group="MTF Confluence")
+
+// Signal scoring
+useScoring       = input.bool(true,  "Use Signal Scoring (multi-factor)", group="Scoring")
+minScore         = input.int(4,      "Min Score to Enter (1-7)",          group="Scoring", minval=1, maxval=7)
+
+// Risk management
+slPct     = input.float(2.0, "Stop Loss %",    minval=0.1, group="Risk")
+tpPct     = input.float(4.0, "Take Profit %",  minval=0.1, group="Risk")
+minRR     = input.float(1.5, "Min Risk/Reward", minval=0.5, group="Risk")
+
+// Trailing stop
+useTrail      = input.bool(true,  "Trailing Stop",            group="Trailing")
+trailActPct   = input.float(1.5, "Trail Activation %",       group="Trailing")
+trailDistPct  = input.float(0.5, "Trail Distance %",         group="Trailing")
+trailStepPct  = input.float(0.1, "Trail Step %",             group="Trailing")
+
+// ── Indicators ──────────────────────────────────────────────
+emaF = ta.ema(close, emaFast)
+emaM = ta.ema(close, emaMid)
+emaS = ta.ema(close, emaSlow)
+emaT = ta.ema(close, emaTrend)
+rsi  = ta.rsi(close, rsiLen)
+[macd, sig, hist] = ta.macd(close, macdFast, macdSlow, macdSig)
+avgV  = ta.sma(volume, 20)
+vRatio = volume / avgV
+
+// ADX
+adxVal    = ta.adx(high, low, close, adxLen)
+diPlus    = ta.dmi(adxLen, adxLen).plus
+diMinus   = ta.dmi(adxLen, adxLen).minus
+adxRising = adxVal > adxVal[1]
+
+// Volume pressure index (cumulative buying vs selling pressure)
+volPressure    = ta.sma(volume * (close - low) / (high - low + 0.0001), 14)
+volPressureAvg = ta.sma(volPressure, 20)
+buyingPressure = volPressure > volPressureAvg
+
+// Multi-timeframe EMA
+emaTrendMtf = request.security(syminfo.tickerid, mtfTimeframe, ta.ema(close, emaSlow))
+mtfAligned  = useMtfConfluence ? (close > emaTrendMtf) : true
+
+// ── Trend Context ───────────────────────────────────────────
+emaStackLong  = emaF > emaM and emaM > emaS
+emaStackShort = emaF < emaM and emaM < emaS
+uptrend   = close > emaS and emaStackLong  and close > emaT
+downtrend = close < emaS and emaStackShort and close < emaT
+
+// ADX filter
+adxConfirm = useAdxFilter ? (adxVal > adxThreshold and adxRising) : true
+
+// ── Signal Scoring (1-7) ───────────────────────────────────
+// Long score
+longScore = 0
+longScore += emaStackLong                           ? 1 : 0
+longScore += close > emaT                           ? 1 : 0
+longScore += rsi > rsiMin and rsi < 80              ? 1 : 0
+longScore += macd > sig                             ? 1 : 0
+longScore += macd > 0                               ? 1 : 0
+longScore += vRatio > volMult                       ? 1 : 0
+longScore += buyingPressure                         ? 1 : 0
+
+// Short score
+shortScore = 0
+shortScore += emaStackShort                         ? 1 : 0
+shortScore += close < emaT                          ? 1 : 0
+shortScore += rsi < rsiMax and rsi > 20             ? 1 : 0
+shortScore += macd < sig                            ? 1 : 0
+shortScore += macd < 0                              ? 1 : 0
+shortScore += vRatio > volMult                      ? 1 : 0
+shortScore += not buyingPressure                    ? 1 : 0
+
+// ── Entry Conditions ────────────────────────────────────────
+enterLong  = false
+enterShort = false
+if useScoring
+    enterLong  := longScore >= minScore
+    enterShort := shortScore >= minScore
+else
+    enterLong  := uptrend and rsi > rsiMin and macd > sig and macd > 0 and vRatio > volMult
+    enterShort := downtrend and rsi < rsiMax and macd < sig and macd < 0 and vRatio > volMult
+
+// Apply filters
+enterLong  := enterLong  and adxConfirm and mtfAligned
+enterShort := enterShort and adxConfirm and mtfAligned
+
+if useTrendFilter
+    enterLong  := enterLong  and uptrend
+    enterShort := enterShort and downtrend
+
+// ── Risk/Reward Minimum Filter ──────────────────────────────
+rrRatio = tpPct / slPct
+rrPass  = rrRatio >= minRR
+
+// ── Risk Management ─────────────────────────────────────────
+longStop  = close * (1 - slPct / 100)
+longTp    = close * (1 + tpPct / 100)
+shortStop = close * (1 + slPct / 100)
+shortTp   = close * (1 - tpPct / 100)
+
+// ── Execution ───────────────────────────────────────────────
+if enterLong and strategy.position_size == 0 and rrPass
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long-X", "Long", stop=longStop, limit=longTp)
+
+if enterShort and strategy.position_size == 0 and rrPass
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short-X", "Short", stop=shortStop, limit=shortTp)
+
+// Trailing stop with activation threshold
+if useTrail and strategy.position_size > 0
+    entryPrice = strategy.position_avg_price
+    actLevel   = entryPrice * (1 + trailActPct / 100)
+    if close >= actLevel
+        trailOffset = close * trailDistPct / 100
+        strategy.exit("Long-Trail", "Long", trail_offset=trailOffset, trail_points=na, trail_price=na)
+
+if useTrail and strategy.position_size < 0
+    entryPrice = strategy.position_avg_price
+    actLevel   = entryPrice * (1 - trailActPct / 100)
+    if close <= actLevel
+        trailOffset = close * trailDistPct / 100
+        strategy.exit("Short-Trail", "Short", trail_offset=trailOffset, trail_points=na, trail_price=na)
+
+// ── Alerts ──────────────────────────────────────────────────
+scoreText = "Score: " + str.tostring(longScore) + "/7"
+alertcondition(enterLong,  "Momentum Buy",  "MOMENTUM BUY  {{ticker}} @ {{close}} | ADX=" + str.tostring(adxVal, "#.0") + " | RSI=" + str.tostring(rsi, "#.0") + " | Score=" + str.tostring(longScore) + "/7 | Vol×" + str.tostring(vRatio, "#.0"))
+alertcondition(enterShort, "Momentum Sell", "MOMENTUM SELL {{ticker}} @ {{close}} | ADX=" + str.tostring(adxVal, "#.0") + " | RSI=" + str.tostring(rsi, "#.0") + " | Score=" + str.tostring(shortScore) + "/7 | Vol×" + str.tostring(vRatio, "#.0"))
+
+// ── Visualization ───────────────────────────────────────────
+emaColor(emaVal, trend) =>
+    trend ? color.new(#26A69A, 0) : color.new(#EF5350, 0)
+
+plot(emaF, "Fast",   color.new(#2196F3, 30))
+plot(emaM, "Mid",    color.new(#FF9800, 30))
+plot(emaS, "Slow",   color.new(#9C27B0, 20), linewidth=2)
+plot(useTrendFilter ? emaT : na, "Trend", color.new(#607D8B, 40), linewidth=2)
+
+// ADX strength background
+adxBg = adxVal > adxStrong ? color.new(#4CAF50, 90) : adxVal > adxThreshold ? color.new(#FFC107, 92) : color.new(#F44336, 95)
+bgcolor(useAdxFilter ? adxBg : na, title="ADX Strength")
+
+// Signal score labels
+plotshape(enterLong,  style=shape.labelup,   location=location.belowbar,
+  color=color.new(#26A69A, 10), text="Mo " + str.tostring(longScore),
+  textcolor=color.white, size=size.small)
+plotshape(enterShort, style=shape.labeldown, location=location.abovebar,
+  color=color.new(#EF5350, 10), text="Mo " + str.tostring(shortScore),
+  textcolor=color.white, size=size.small)
+
+// Divergence / RSI zones
+rsiBg = rsi > 70 ? color.new(#EF5350, 92) : rsi < 30 ? color.new(#26A69A, 92) : na
+bgcolor(rsiBg, title="RSI Zones")
+
+// Volume pressure histogram
+plot(volPressure, "Vol Pressure",   color.new(#2196F3, 70), style=plot.style_columns)
+plot(volPressureAvg, "Vol Pressure MA", color.new(#FF9800, 50), linewidth=1)
+
+// MTF confluence indicator
+mtfColor = mtfAligned ? color.new(#26A69A, 60) : color.new(#EF5350, 60)
+plotshape(useMtfConfluence and not mtfAligned, style=shape.xcross,
+  location=location.abovebar, color=mtfColor, size=size.tiny, title="MTF Misaligned")

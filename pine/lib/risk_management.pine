@@ -1,0 +1,118 @@
+//@version=6
+// iVGeek Risk Management Library v1.0
+// Reusable risk functions for any strategy
+// ============================================================
+library("iVGeek Risk Management")
+
+// === Position Sizing ===
+// Kelly Criterion: f* = (p*b - q) / b where b = avgWin/avgLoss
+// @param winRate: decimal (0-1)
+// @param avgWin: average win amount
+// @param avgLoss: average loss amount (positive)
+// @param maxFrac: maximum fraction of capital to risk (0-1)
+// @returns: fraction of capital to risk
+export kellyFraction(float winRate, float avgWin, float avgLoss, float maxFrac) =>
+    float frac = maxFrac
+    if not na(winRate) and not na(avgWin) and not na(avgLoss) and avgLoss > 0 and avgWin / avgLoss > 0
+        b = avgWin / avgLoss
+        p = winRate
+        q = 1 - p
+        kellyRaw = p - (q / b)
+        frac := math.max(0, math.min(kellyRaw * 0.25, maxFrac))  // 25% Kelly for safety
+    frac
+
+// Fixed fraction position size
+// @param riskPct: percent of equity to risk
+// @returns: same value (convenience wrapper)
+export fixedFraction(float riskPct) => riskPct / 100
+
+// Volatility-adjusted position size
+// @param baseFrac: base fraction of capital
+// @param currentVol: current ATR%
+// @param targetVol: target ATR% for normalization
+// @param minFrac: minimum fraction allowed
+// @param maxFrac: maximum fraction allowed
+// @returns: adjusted fraction
+export volatilityAdjusted(float baseFrac, float currentVol, float targetVol, float minFrac, float maxFrac) =>
+    if currentVol <= 0
+        baseFrac
+    else
+        adj = baseFrac * (targetVol / currentVol)
+        math.max(minFrac, math.min(adj, maxFrac))
+
+// Anti-martingale: increase size after consecutive wins
+// @param baseFrac: base fraction
+// @param consecutiveWins: number of consecutive wins
+// @param maxMult: maximum multiplier
+// @returns: adjusted fraction
+export antiMartingale(float baseFrac, int consecutiveWins, float maxMult) =>
+    mult = 1.0 + (consecutiveWins * 0.1)
+    mult := math.min(mult, maxMult)
+    baseFrac * mult
+
+// === Stop Loss ===
+// ATR-based stop
+// @param entryPrice: position entry price
+// @param atr: current ATR value
+// @param multiplier: ATR multiplier
+// @param isLong: true for long, false for short
+// @returns: stop price
+export atrStop(float entryPrice, float atr, float multiplier, bool isLong) =>
+    isLong ? entryPrice - (atr * multiplier) : entryPrice + (atr * multiplier)
+
+// Percent-based stop
+// @param entryPrice: position entry price
+// @param pct: stop percentage (1 = 1%)
+// @param isLong: true for long
+// @returns: stop price
+export percentStop(float entryPrice, float pct, bool isLong) =>
+    isLong ? entryPrice * (1 - pct / 100) : entryPrice * (1 + pct / 100)
+
+// Support/Resistance based stop
+// @param entryPrice: entry price
+// @param srLevel: nearest S/R level
+// @param bufferPct: buffer % beyond S/R
+// @param isLong: true for long
+// @returns: stop price
+export srStop(float entryPrice, float srLevel, float bufferPct, bool isLong) =>
+    buffer = srLevel * (bufferPct / 100)
+    isLong ? math.min(entryPrice * 0.95, srLevel - buffer) : math.max(entryPrice * 1.05, srLevel + buffer)
+
+// === Trailing Stop ===
+// @param peakPrice: highest (long) or lowest (short) since entry
+// @param trailDistPct: trail distance %
+// @param isLong: true for long, false for short
+// @returns: trailing stop price
+export trailStop(float peakPrice, float trailDistPct, bool isLong) =>
+    isLong ? peakPrice * (1 - trailDistPct / 100) : peakPrice * (1 + trailDistPct / 100)
+
+// === Risk/Reward ===
+// Check if trade meets minimum risk/reward ratio
+// @param entryPrice: entry price
+// @param stopPrice: stop loss price
+// @param targetPrice: take profit price
+// @param minRR: minimum risk/reward ratio
+// @returns: true if R:R >= minRR
+export meetsMinRR(float entryPrice, float stopPrice, float targetPrice, float minRR) =>
+    risk = math.abs(entryPrice - stopPrice)
+    reward = math.abs(targetPrice - entryPrice)
+    risk > 0 ? (reward / risk) >= minRR : false
+
+// === Minimum Risk/Reward Ratio ===
+// Returns the actual R:R ratio for comparison
+// @param entryPrice: entry price
+// @param stopPrice: stop loss price
+// @param targetPrice: take profit price
+// @returns: risk/reward ratio (0 if invalid)
+export minimumRiskReward(float entryPrice, float stopPrice, float targetPrice) =>
+    risk = math.abs(entryPrice - stopPrice)
+    reward = math.abs(targetPrice - entryPrice)
+    risk > 0 ? reward / risk : 0.0
+
+// === Drawdown Protection ===
+// @param currentEquity: current equity
+// @param peakEquity: peak equity
+// @param maxDrawdownPct: max allowed drawdown %
+// @returns: true if max drawdown exceeded
+export maxDrawdownExceeded(float currentEquity, float peakEquity, float maxDrawdownPct) =>
+    peakEquity > 0 ? ((peakEquity - currentEquity) / peakEquity * 100) >= maxDrawdownPct : false

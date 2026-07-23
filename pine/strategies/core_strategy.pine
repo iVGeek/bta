@@ -1,0 +1,495 @@
+//@version=6
+// iVGeek Quantum Trading Bot v3.0
+// Multi-strategy, multi-timeframe system with webhook integration
+// Upgraded to Pine Script v6 with inlined indicator functions
+// ============================================================
+
+strategy("iVGeek Quantum Trading Bot", shorttitle="iVGeek Bot", overlay=true, pyramiding=1, default_qty_type=strategy.percent_of_equity, default_qty_value=100, initial_capital=10000, commission_type=strategy.commission.cash_per_order, commission_value=0.1, slippage=2, calc_on_every_tick=false)
+
+// ============================================================
+// INLINED LIBRARY FUNCTIONS
+// ============================================================
+
+trendStrengthEx(float close, float ema9, float ema21, float ema50, float ema200, float adxVal, float diPlus, float diMinus, float rsiVal) =>
+    score = 0.0
+    score += close > ema9 ? 5.0 : 0.0
+    score += close > ema21 ? 5.0 : 0.0
+    score += close > ema50 ? 5.0 : 0.0
+    score += close > ema200 ? 5.0 : 0.0
+    score += ema9 > ema21 and ema21 > ema50 ? 5.0 : 0.0
+    score += math.min(adxVal * 1.2, 30.0)
+    score += diPlus > diMinus ? 15.0 : 0.0
+    score += rsiVal > 50 and rsiVal < 70 ? 15.0 : rsiVal > 50 ? 7.5 : 0.0
+    score += close > ema200 ? 15.0 : 0.0
+    math.min(score, 100.0)
+
+volumePressureIndex(float open, float high, float low, float close, float volume) =>
+    barRange = high - low
+    buyVol = barRange > 0 ? volume * (close - low) / barRange : volume * 0.5
+    sellVol = barRange > 0 ? volume * (high - close) / barRange : volume * 0.5
+    avgBuy = ta.sma(buyVol, 14)
+    avgSell = ta.sma(sellVol, 14)
+    total = avgBuy + avgSell
+    buyP = total > 0 ? avgBuy / total * 100 : 50.0
+    sellP = total > 0 ? avgSell / total * 100 : 50.0
+    [buyP, sellP]
+
+minimumRiskReward(float entryPrice, float stopPrice, float targetPrice) =>
+    risk = math.abs(entryPrice - stopPrice)
+    reward = math.abs(targetPrice - entryPrice)
+    risk > 0 ? reward / risk : 0.0
+
+// ============================================================
+// 1. INPUTS
+// ============================================================
+botId        = input.string("iVGeek-Bot-1", "Bot ID", group="General")
+signalSecret = input.string("", "Webhook Secret", group="General")
+
+allowLong    = input.bool(true,  "Allow Long",  group="Direction")
+allowShort   = input.bool(true,  "Allow Short", group="Direction")
+
+useMom       = input.bool(true, "Momentum",       group="Strategies")
+useMR        = input.bool(true, "Mean Reversion",  group="Strategies")
+useBO        = input.bool(true, "Breakout",        group="Strategies")
+useSMC       = input.bool(true, "Smart Money",     group="Strategies")
+
+mtfEnabled   = input.bool(true, "Enable MTF Filter", group="Timeframe")
+mtfRes       = input.string("1h", "Higher Timeframe", options=["15m","30m","1h","2h","4h","1D"], group="Timeframe")
+
+rsiLen       = input.int(14, "RSI Length", minval=2, maxval=50, group="Indicators")
+adxLen       = input.int(14, "ADX Length", minval=1, maxval=50, group="Indicators")
+stochLen     = input.int(14, "Stochastic Length", minval=1, maxval=50, group="Indicators")
+bbLen        = input.int(20, "BB Length", minval=5, group="Indicators")
+bbMult       = input.float(2.0, "BB StdDev", minval=0.5, maxval=5, group="Indicators")
+volMult      = input.float(1.5, "Volume Multiplier", minval=1.0, maxval=10.0, group="Indicators")
+adxTrendThreshold = input.int(25, "ADX Trend Threshold", minval=15, maxval=40, group="Indicators")
+adxWeakThreshold  = input.int(20, "ADX Weak Threshold", minval=10, maxval=30, group="Indicators")
+squeezeLen        = input.int(20, "Squeeze Length", minval=5, maxval=50, group="Indicators")
+squeezeBBMult     = input.float(2.0, "Squeeze BB Mult", minval=0.5, maxval=4.0, group="Indicators")
+squeezeKeltMult   = input.float(1.5, "Squeeze KC Mult", minval=0.5, maxval=4.0, group="Indicators")
+
+maxRiskPct   = input.float(2.0, "Position Size %", minval=0.1, maxval=100.0, step=0.1, group="Risk", tooltip="Max % of equity per position")
+useKelly     = input.bool(true, "Use Kelly Sizing", group="Risk")
+volAdjust    = input.bool(true, "Volatility-Adjusted Sizing", group="Risk")
+useAntiMart  = input.bool(false, "Anti-Martingale Sizing (Win Streak)", group="Risk", tooltip="Increase size after consecutive wins")
+antiMartMult = input.float(1.15, "Anti-Martingale Multiplier", minval=1.01, maxval=2.0, step=0.01, group="Risk")
+antiMartMax  = input.float(5.0, "Anti-Martingale Max Size %", minval=1.0, maxval=20.0, step=0.5, group="Risk")
+minRR        = input.float(1.5, "Minimum R:R Ratio", minval=0.5, maxval=5.0, step=0.1, group="Risk", tooltip="Minimum reward-to-risk for entry")
+
+slMode       = input.string("ATR", "Stop Loss Mode", options=["Fixed %", "ATR", "S/R", "None"], group="Exits")
+tpMode       = input.string("ATR Multiplier", "Take Profit Mode", options=["Fixed %", "ATR Multiplier", "S/R", "None"], group="Exits")
+slPct        = input.float(2.0, "Stop Loss %", minval=0.1, maxval=10.0, step=0.1, group="Exits")
+tpPct        = input.float(4.0, "Take Profit %", minval=0.1, maxval=50.0, step=0.5, group="Exits")
+atrSlMult    = input.float(1.5, "ATR Stop Multiplier", minval=0.5, maxval=5.0, step=0.1, group="Exits")
+atrTpMult    = input.float(3.0, "ATR TP Multiplier", minval=0.5, maxval=10.0, step=0.1, group="Exits")
+
+useTrail     = input.bool(true, "Enable Trailing Stop", group="Trailing")
+trailActPct  = input.float(1.5, "Activation %", minval=0.1, maxval=10.0, step=0.1, group="Trailing")
+trailDistPct = input.float(0.5, "Trail Distance %", minval=0.1, maxval=5.0, step=0.1, group="Trailing")
+
+srLookback   = input.int(10, "S/R Lookback", minval=5, maxval=50, group="Smart Money")
+
+useCircuitBreaker = input.bool(true, "Enable Drawdown Circuit Breaker", group="Protection")
+maxDrawdownPct   = input.float(10.0, "Max Drawdown % to Halt", minval=1.0, maxval=50.0, step=0.5, group="Protection", tooltip="Halt trading when drawdown exceeds this %")
+cooldownBars     = input.int(20, "Cooldown Bars After Halt", minval=5, maxval=100, group="Protection")
+
+// ============================================================
+// 2. MULTI-TIMEFRAME DATA
+// ============================================================
+mtfClose  = mtfEnabled ? request.security(syminfo.tickerid, mtfRes, close) : close
+mtfEma200 = mtfEnabled ? request.security(syminfo.tickerid, mtfRes, ta.ema(close, 200)) : ta.ema(close, 200)
+
+// ============================================================
+// 3. INDICATORS
+// ============================================================
+ema9   = ta.ema(close, 9)
+ema21  = ta.ema(close, 21)
+ema50  = ta.ema(close, 50)
+ema100 = ta.ema(close, 100)
+ema200 = ta.ema(close, 200)
+
+rsiVal = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+
+[bbUpper, bbMiddle, bbLower] = ta.bb(close, bbLen, bbMult)
+bbWidth   = (bbUpper - bbLower) / bbMiddle * 100
+bbSqueeze = bbWidth < ta.sma(bbWidth, 50)
+
+atrVal = ta.atr(14)
+atrPct = atrVal / close * 100
+
+stochK = ta.stoch(close, high, low, stochLen)
+stochD = ta.sma(stochK, 3)
+
+volSma   = ta.sma(volume, 20)
+volRatio = volume / volSma
+volExp   = volRatio >= volMult
+
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+trendStrong = adxVal >= adxTrendThreshold
+trendWeak   = adxVal < adxWeakThreshold
+
+// ============================================================
+// 4. INDICATOR LIBRARY ENHANCEMENTS
+// ============================================================
+
+// --- Trend Strength Score (0-100 composite) ---
+trendScore = trendStrengthEx(close, ema9, ema21, ema50, ema200, adxVal, diPlus, diMinus, rsiVal)
+
+// --- Volume Pressure Index ---
+[vpiBull, vpiBear] = volumePressureIndex(open, high, low, close, volume)
+volPressureBull = vpiBull > 1.0
+volPressureBear = vpiBear > 1.0
+
+// --- Enhanced Squeeze Detector (BB inside Keltner) ---
+kcMid   = ta.ema(close, 20)
+kcUpper = kcMid + ta.atr(20) * squeezeKeltMult
+kcLower = kcMid - ta.atr(20) * squeezeKeltMult
+sqUpper = kcMid + ta.stdev(close, squeezeLen) * squeezeBBMult
+sqLower = kcMid - ta.stdev(close, squeezeLen) * squeezeBBMult
+sqOn    = sqLower > kcLower and sqUpper < kcUpper
+sqOff   = sqLower < kcLower and sqUpper > kcUpper
+sqRelease = sqOff and sqUpper[1] > kcUpper[1]
+
+// ============================================================
+// 5. MARKET REGIME
+// ============================================================
+trendUp   = close > ema200 and mtfClose > mtfEma200
+trendDown = close < ema200 and mtfClose < mtfEma200
+
+lowVol   = atrPct < ta.sma(atrPct, 50) and bbSqueeze
+highVol  = atrPct > ta.sma(atrPct, 50) * 1.5
+normalVol = not lowVol and not highVol
+
+ranging  = trendWeak and not highVol
+trending = trendStrong
+
+// ============================================================
+// 6. SUPPORT & RESISTANCE
+// ============================================================
+isHH = high == ta.highest(high, srLookback * 2 + 1) and high[srLookback] == ta.highest(high, srLookback * 2 + 1)
+isLL = low == ta.lowest(low, srLookback * 2 + 1) and low[srLookback] == ta.lowest(low, srLookback * 2 + 1)
+resistance = ta.valuewhen(isHH, high, 0)
+support    = ta.valuewhen(isLL, low, 0)
+
+// ============================================================
+// 7. SMART MONEY CONCEPTS
+// ============================================================
+sweptHigh = high > ta.highest(high[1], 20) and close < open
+sweptLow  = low < ta.lowest(low[1], 20) and close > open
+
+obBull = low == ta.lowest(low, 5) and close > open and close[1] < open[1]
+obBear = high == ta.highest(high, 5) and close < open and close[1] > open[1]
+
+bosBull = close > ta.highest(high[1], 10)
+bosBear = close < ta.lowest(low[1], 10)
+
+// ============================================================
+// 8. DRAWDOWN CIRCUIT BREAKER
+// ============================================================
+var int cooldownCounter = 0
+var bool circuitHalted  = false
+var float peakEquity    = strategy.initial_capital
+
+peakEquity := math.max(peakEquity, strategy.equity)
+currentDD  = (peakEquity - strategy.equity) / peakEquity * 100
+ddExceeded = currentDD >= maxDrawdownPct
+
+if ddExceeded and not circuitHalted
+    circuitHalted := true
+    cooldownCounter := cooldownBars
+
+if circuitHalted
+    if cooldownCounter > 0
+        cooldownCounter -= 1
+    if cooldownCounter == 0
+        circuitHalted := false
+
+tradingAllowed = not circuitHalted
+
+// ============================================================
+// 9. CONSECUTIVE WIN TRACKING (Anti-Martingale)
+// ============================================================
+var int consecutiveWins  = 0
+var int consecutiveLosses = 0
+
+if strategy.closedtrades > 0
+    lastProfit = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if lastProfit > 0
+        consecutiveWins  += 1
+        consecutiveLosses := 0
+    else
+        consecutiveLosses += 1
+        consecutiveWins   := 0
+
+antiMartSize = maxRiskPct
+if useAntiMart and consecutiveWins >= 2
+    antiMartSize := math.min(maxRiskPct * math.pow(antiMartMult, consecutiveWins - 1), antiMartMax)
+
+// ============================================================
+// 10. SIGNAL GENERATION
+// ============================================================
+// Momentum: EMA alignment + RSI + MACD + volume
+momLong  = useMom and trendUp   and close > ema50 and close > ema21 and rsiVal > 50 and macdLine > macdSignal and macdLine > 0 and volExp
+momShort = useMom and trendDown and close < ema50 and close < ema21 and rsiVal < 50 and macdLine < macdSignal and macdLine < 0 and volExp
+
+// Mean Reversion: BB extremes + RSI + Stochastic
+mrLong  = useMR and normalVol and close <= bbLower and rsiVal < 30 and stochK < 20 and stochD < 20
+mrShort = useMR and normalVol and close >= bbUpper and rsiVal > 70 and stochK > 80 and stochD > 80
+
+// Breakout: Range break + volume + ATR expansion + squeeze release
+h20      = ta.highest(high, 20)
+l20      = ta.lowest(low, 20)
+avgAtr20 = ta.sma(atrVal, 20)
+boLong   = useBO and trendUp   and close > h20[1] and volExp and atrVal > avgAtr20 * 1.5 and (sqRelease or not sqOn)
+boShort  = useBO and trendDown and close < l20[1] and volExp and atrVal > avgAtr20 * 1.5 and (sqRelease or not sqOn)
+
+// Smart Money: Liquidity grab + BOS + volume pressure
+smLong  = useSMC and sweptLow  and bosBull and close > ema50 and volPressureBull
+smShort = useSMC and sweptHigh and bosBear and close < ema50 and volPressureBear
+
+// ============================================================
+// 11. SIGNAL SCORING
+// ============================================================
+longScore  = (momLong  ? 2 : 0) + (mrLong  ? 2 : 0) + (boLong  ? 3 : 0) + (smLong  ? 3 : 0)
+shortScore = (momShort ? 2 : 0) + (mrShort ? 2 : 0) + (boShort ? 3 : 0) + (smShort ? 3 : 0)
+
+// Boost score with trend strength from library
+longScore  += trendScore >= 70 ? 1 : 0
+shortScore += trendScore <= 30 ? 1 : 0
+
+// Volume pressure confirmation bonus
+longScore  += volPressureBull ? 1 : 0
+shortScore += volPressureBear ? 1 : 0
+
+enterLong  = longScore >= 2 and longScore > shortScore and allowLong and tradingAllowed
+enterShort = shortScore >= 2 and shortScore > longScore and allowShort and tradingAllowed
+
+strongLong  = longScore >= 4
+strongShort = shortScore >= 4
+
+// ============================================================
+// 12. R:R FILTER (inlined from Risk Management Library)
+// ============================================================
+calcRawSl(ep, isLong) =>
+    float result = na
+    if slMode == "ATR"
+        result := isLong ? ep - atrVal * atrSlMult : ep + atrVal * atrSlMult
+    else if slMode == "Fixed %"
+        result := isLong ? ep * (1 - slPct / 100) : ep * (1 + slPct / 100)
+    else if slMode == "S/R"
+        sr = isLong ? support : resistance
+        fb = isLong ? ep * (1 - slPct / 100) : ep * (1 + slPct / 100)
+        result := na(sr) ? fb : isLong ? math.min(sr, fb) : math.max(sr, fb)
+    result
+
+calcRawTp(ep, isLong) =>
+    float result = na
+    if tpMode == "Fixed %"
+        result := isLong ? ep * (1 + tpPct / 100) : ep * (1 - tpPct / 100)
+    else if tpMode == "ATR Multiplier"
+        result := isLong ? ep + atrVal * atrTpMult : ep - atrVal * atrTpMult
+    else if tpMode == "S/R"
+        sr = isLong ? resistance : support
+        fb = isLong ? ep * (1 + tpPct / 100) : ep * (1 - tpPct / 100)
+        result := na(sr) ? fb : isLong ? math.max(sr, fb) : math.min(sr, fb)
+    result
+
+rrFilterLong  = true
+rrFilterShort = true
+
+longSlTest  = calcRawSl(close, true)
+longTpTest  = calcRawTp(close, true)
+shortSlTest = calcRawSl(close, false)
+shortTpTest = calcRawTp(close, false)
+
+if not na(longSlTest) and not na(longTpTest) and longSlTest > 0 and longTpTest > 0
+    rrFilterLong := minimumRiskReward(close, longSlTest, longTpTest) >= minRR
+
+if not na(shortSlTest) and not na(shortTpTest) and shortSlTest > 0 and shortTpTest > 0
+    rrFilterShort := minimumRiskReward(close, shortSlTest, shortTpTest) >= minRR
+
+enterLong  := enterLong and rrFilterLong
+enterShort := enterShort and rrFilterShort
+strongLong  := enterLong and longScore >= 4
+strongShort := enterShort and shortScore >= 4
+
+// ============================================================
+// 13. POSITION SIZING
+// ============================================================
+winRate    = strategy.trades > 0 ? strategy.wintrades / strategy.trades : 0.0
+avgWinPct  = strategy.wintrades > 0 ? strategy.grossprofit / strategy.wintrades / strategy.initial_capital * 100 : 0.0
+avgLossPct = strategy.losetrades > 0 ? math.abs(strategy.grossloss / strategy.losetrades / strategy.initial_capital * 100) : 0.0
+
+posSizePct = maxRiskPct
+
+if useKelly and winRate > 0 and avgWinPct > 0 and avgLossPct > 0
+    kellyRaw = winRate - (1.0 - winRate) / (avgWinPct / avgLossPct)
+    kellyFrac = math.max(0.005, math.min(kellyRaw * 0.25, maxRiskPct / 100))
+    posSizePct := kellyFrac * 100
+
+if volAdjust and atrPct > 0
+    volNorm = math.min(math.max(1.5 / atrPct, 0.3), 3.0)
+    posSizePct := math.min(posSizePct * volNorm, maxRiskPct * 2)
+
+if useAntiMart
+    posSizePct := math.max(posSizePct, antiMartSize)
+
+posSizePct := math.min(posSizePct, maxRiskPct)
+
+// ============================================================
+// 14. STOP / TARGET CALCULATION
+// ============================================================
+calcSl(ep, isLong) =>
+    float result = na
+    if slMode == "ATR"
+        result := isLong ? ep - atrVal * atrSlMult : ep + atrVal * atrSlMult
+    else if slMode == "Fixed %"
+        result := isLong ? ep * (1 - slPct / 100) : ep * (1 + slPct / 100)
+    else if slMode == "S/R"
+        sr = isLong ? support : resistance
+        fb = isLong ? ep * (1 - slPct / 100) : ep * (1 + slPct / 100)
+        result := na(sr) ? fb : isLong ? math.min(sr, fb) : math.max(sr, fb)
+    result
+
+calcTp(ep, isLong) =>
+    float result = na
+    if tpMode == "Fixed %"
+        result := isLong ? ep * (1 + tpPct / 100) : ep * (1 - tpPct / 100)
+    else if tpMode == "ATR Multiplier"
+        result := isLong ? ep + atrVal * atrTpMult : ep - atrVal * atrTpMult
+    else if tpMode == "S/R"
+        sr = isLong ? resistance : support
+        fb = isLong ? ep * (1 + tpPct / 100) : ep * (1 - tpPct / 100)
+        result := na(sr) ? fb : isLong ? math.max(sr, fb) : math.min(sr, fb)
+    result
+
+trendExitLong  = close < ema21 and rsiVal < 50
+trendExitShort = close > ema21 and rsiVal > 50
+
+// ============================================================
+// 15. EXECUTION
+// ============================================================
+var float initLongSl  = na
+var float initLongTp  = na
+var float initShortSl = na
+var float initShortTp = na
+var float trailPeak   = na
+
+if strategy.position_size > 0
+    trailPeak := na(trailPeak) ? high : math.max(trailPeak, high)
+else if strategy.position_size < 0
+    trailPeak := na(trailPeak) ? low : math.min(trailPeak, low)
+else
+    trailPeak := na
+
+if enterLong and strategy.position_size == 0
+    initLongSl := calcSl(close, true)
+    initLongTp := calcTp(close, true)
+    strategy.entry("Long", strategy.long, qty=posSizePct)
+
+if enterShort and strategy.position_size == 0
+    initShortSl := calcSl(close, false)
+    initShortTp := calcTp(close, false)
+    strategy.entry("Short", strategy.short, qty=posSizePct)
+
+if strategy.position_size > 0
+    currentSl = initLongSl
+    currentTp = initLongTp
+    if useTrail and not na(trailPeak)
+        actPrice = strategy.position_avg_price * (1 + trailActPct / 100)
+        if trailPeak >= actPrice
+            ts = trailPeak * (1 - trailDistPct / 100)
+            currentSl := na(currentSl) ? ts : math.max(currentSl, ts)
+    strategy.exit("Long-X", "Long", stop=currentSl, limit=currentTp)
+
+if strategy.position_size < 0
+    currentSl = initShortSl
+    currentTp = initShortTp
+    if useTrail and not na(trailPeak)
+        actPrice = strategy.position_avg_price * (1 - trailActPct / 100)
+        if trailPeak <= actPrice
+            ts = trailPeak * (1 + trailDistPct / 100)
+            currentSl := na(currentSl) ? ts : math.min(currentSl, ts)
+    strategy.exit("Short-X", "Short", stop=currentSl, limit=currentTp)
+
+if strategy.position_size > 0 and trendExitLong
+    strategy.close("Long", comment="Trend Exit")
+    initLongSl := na
+    initLongTp := na
+
+if strategy.position_size < 0 and trendExitShort
+    strategy.close("Short", comment="Trend Exit")
+    initShortSl := na
+    initShortTp := na
+
+if strategy.position_size == 0
+    initLongSl  := na
+    initLongTp  := na
+    initShortSl := na
+    initShortTp := na
+
+// Circuit breaker forced close
+if circuitHalted and strategy.position_size != 0
+    strategy.close_all(comment="Circuit Breaker")
+    initLongSl  := na
+    initLongTp  := na
+    initShortSl := na
+    initShortTp := na
+
+// ============================================================
+// 16. VISUALIZATION
+// ============================================================
+plot(ema9,  "EMA 9",  color=#2196F3, linewidth=1)
+plot(ema21, "EMA 21", color=#FF9800, linewidth=1)
+plot(ema50, "EMA 50", color=#9C27B0, linewidth=2)
+plot(ema200,"EMA 200",color=#607D8B, linewidth=1)
+
+pMid  = plot(bbMiddle, "BB Mid", color=color.new(#9E9E9E, 60))
+pUp   = plot(bbUpper, "BB Upper", color=color.new(#F44336, 30))
+pLow  = plot(bbLower, "BB Lower", color=color.new(#4CAF50, 30))
+fill(pUp, pLow, color=color.new(#9E9E9E, 95))
+
+plot(isHH, "HH", style=plot.style_cross, color=color.new(#F44336, 50), linewidth=1)
+plot(isLL, "LL", style=plot.style_cross, color=color.new(#4CAF50, 50), linewidth=1)
+
+plotshape(obBull, style=shape.labelup,   location=location.belowbar, color=color.new(#4CAF50, 70), text="OB", textcolor=color.white, size=size.tiny)
+plotshape(obBear, style=shape.labeldown, location=location.abovebar, color=color.new(#F44336, 70), text="OB", textcolor=color.white, size=size.tiny)
+
+plotshape(strongLong,  style=shape.labelup,   location=location.belowbar, color=color.new(#00E676, 70), text="STRONG BUY",  textcolor=color.white, size=size.small)
+plotshape(enterLong and not strongLong,  style=shape.triangleup,   location=location.belowbar, color=color.new(#4CAF50, 50), size=size.small)
+plotshape(strongShort, style=shape.labeldown, location=location.abovebar, color=color.new(#FF1744, 70), text="STRONG SELL", textcolor=color.white, size=size.small)
+plotshape(enterShort and not strongShort, style=shape.triangledown, location=location.abovebar, color=color.new(#F44336, 50), size=size.small)
+
+plotshape(sweptLow,  style=shape.circle, location=location.belowbar, color=color.new(#00E676, 40), size=size.tiny)
+plotshape(sweptHigh, style=shape.circle, location=location.abovebar, color=color.new(#FF1744, 40), size=size.tiny)
+
+plotshape(bosBull, style=shape.arrowup,   location=location.belowbar, color=color.new(#00E676, 60), size=size.small)
+plotshape(bosBear, style=shape.arrowdown, location=location.abovebar, color=color.new(#FF1744, 60), size=size.small)
+
+bgcolor(trendStrong and trendUp   ? color.new(#4CAF50, 95) : na)
+bgcolor(trendStrong and trendDown ? color.new(#F44336, 95) : na)
+bgcolor(ranging ? color.new(#FF9800, 95) : na)
+bgcolor(circuitHalted ? color.new(#FF0000, 90) : na)
+
+// Squeeze indicator in lower panel (via plotchar)
+plotchar(sqOn, "Squeeze On", "Q", location.bottom, color.new(#FF9800, 50), size=size.tiny)
+plotchar(sqRelease, "Squeeze Release", "!", location.bottom, color.new(#00E676, 0), size=size.tiny)
+
+// Trend strength label
+var label trendLabel = na
+if barstate.islast
+    label.delete(trendLabel)
+    trendLabel := label.new(bar_index, high, "Trend: " + str.tostring(math.round(trendScore, 1)) + "\nDD: " + str.tostring(math.round(currentDD, 1)) + "%\nWins: " + str.tostring(consecutiveWins), style=label.style_label_down, color=color.new(#2196F3, 30), textcolor=color.white, size=size.small)
+
+// ============================================================
+// 17. ALERTCONDITIONS
+// ============================================================
+alertcondition(enterLong,  title="Buy Signal",       message='{"action":"buy","bot":"'+botId+'","ticker":"{{ticker}}","price":"{{close}}","time":"{{time}}","score":"'+str.tostring(longScore)+'","strategy":"iVGeek Bot"}')
+alertcondition(enterShort, title="Sell Signal",      message='{"action":"sell","bot":"'+botId+'","ticker":"{{ticker}}","price":"{{close}}","time":"{{time}}","score":"'+str.tostring(shortScore)+'","strategy":"iVGeek Bot"}')
+alertcondition(trendExitLong,  title="Exit Long",    message='{"action":"exit_long","bot":"'+botId+'","ticker":"{{ticker}}","price":"{{close}}","reason":"trend_reversal"}')
+alertcondition(trendExitShort, title="Exit Short",   message='{"action":"exit_short","bot":"'+botId+'","ticker":"{{ticker}}","price":"{{close}}","reason":"trend_reversal"}')
+alertcondition(sweptLow,  title="Liquidity Grab Bull", message='{"event":"liquidity_grab","side":"bull","bot":"'+botId+'","ticker":"{{ticker}}","price":"{{close}}"}')
+alertcondition(sweptHigh, title="Liquidity Grab Bear", message='{"event":"liquidity_grab","side":"bear","bot":"'+botId+'","ticker":"{{ticker}}","price":"{{close}}"}')
+alertcondition(circuitHalted, title="Circuit Breaker", message='{"event":"circuit_breaker","bot":"'+botId+'","ticker":"{{ticker}}","drawdown":"'+str.tostring(math.round(currentDD, 1))+'%","action":"halted"}')
+alertcondition(sqRelease, title="Squeeze Release", message='{"event":"squeeze_release","bot":"'+botId+'","ticker":"{{ticker}}","price":"{{close}}","trend_score":"'+str.tostring(math.round(trendScore, 1))+'"}')

@@ -1,0 +1,161 @@
+//@version=6
+// iVGeek Custom Indicators Library v1.0
+// Advanced indicators and market analysis tools
+// ============================================================
+library("iVGeek Indicators")
+
+// === Market Regime Detection ===
+// @param close: close price series
+// @param high: high price series
+// @param low: low price series
+// @returns: tuple (trend: 1=bull, -1=bear, 0=neutral; volatility: 0=low, 1=normal, 2=high)
+export marketRegime(float close, float high, float low) =>
+    ema20  = ta.ema(close, 20)
+    ema50  = ta.ema(close, 50)
+    ema200 = ta.ema(close, 200)
+    atr14  = ta.atr(14)
+    atrPct = atr14 / close * 100
+    avgAtr = ta.sma(atrPct, 50)
+
+    trend = close > ema50 and ema50 > ema200 ? 1 : close < ema50 and ema50 < ema200 ? -1 : 0
+    vol   = atrPct < avgAtr * 0.8 ? 0 : atrPct > avgAtr * 1.5 ? 2 : 1
+    [trend, vol]
+
+// === Support & Resistance Levels ===
+// Fractal-based S/R detection
+// @param high: high price series
+// @param low: low price series
+// @param lookback: periods to look back
+// @returns: tuple (resistLevel, supportLevel, isResist, isSupport)
+export fractalSR(float high, float low, int lookback) =>
+    isResist  = high == ta.highest(high, lookback * 2 + 1) and high[lookback] == ta.highest(high, lookback * 2 + 1)
+    isSupport = low == ta.lowest(low, lookback * 2 + 1) and low[lookback] == ta.lowest(low, lookback * 2 + 1)
+
+    resistLevel = ta.valuewhen(isResist, high, 0)
+    supportLevel = ta.valuewhen(isSupport, low, 0)
+
+    [resistLevel, supportLevel, isResist, isSupport]
+
+// === Trend Strength Index ===
+// Combines ADX, EMA slope, and price position for a composite strength score (0-100)
+// @param close: close price
+// @param high: high price
+// @param low: low price
+// @returns: strength score 0-100
+export trendStrength(float close, float high, float low) =>
+    adxVal  = ta.adx(high, low, close, 14)
+    ema20   = ta.ema(close, 20)
+    ema50   = ta.ema(close, 50)
+    emaSlope = (ema20 - ema20[5]) / ema20[5] * 100
+
+    score = 0.0
+    score += math.min(adxVal * 1.6, 40.0)
+    score += math.min(math.abs(emaSlope) * 10, 30.0)
+    score += close > ema50 ? 15.0 : 0.0
+    score += close > ema20 ? 15.0 : 0.0
+
+    math.min(score, 100.0)
+
+// === Trend Strength (Extended) ===
+// Detailed trend strength with custom EMAs and indicators
+// @param close, ema9, ema21, ema50, ema200: price and EMA values
+// @param adxVal, diPlus, diMinus: DMI values
+// @param rsiVal: RSI value
+// @returns: strength score 0-100
+export trendStrengthEx(float close, float ema9, float ema21, float ema50, float ema200, float adxVal, float diPlus, float diMinus, float rsiVal) =>
+    score = 0.0
+    // EMA alignment (0-25)
+    score += close > ema9 ? 5.0 : 0.0
+    score += close > ema21 ? 5.0 : 0.0
+    score += close > ema50 ? 5.0 : 0.0
+    score += close > ema200 ? 5.0 : 0.0
+    score += ema9 > ema21 and ema21 > ema50 ? 5.0 : 0.0
+    // ADX component (0-30)
+    score += math.min(adxVal * 1.2, 30.0)
+    // DI direction (0-15)
+    score += diPlus > diMinus ? 15.0 : 0.0
+    // RSI position (0-15)
+    score += rsiVal > 50 and rsiVal < 70 ? 15.0 : rsiVal > 50 ? 7.5 : 0.0
+    // Price above EMA200 bonus (0-15)
+    score += close > ema200 ? 15.0 : 0.0
+
+    math.min(score, 100.0)
+
+// === Volume Pressure Index ===
+// Measures buying vs selling pressure using volume + price delta
+// @param close: close price
+// @param volume: volume
+// @returns: VPI (-100 to +100)
+export volumePressure(float close, float volume) =>
+    delta = close - close[1]
+    rawVpi = ta.sma(delta > 0 ? volume : delta < 0 ? -volume : 0, 14)
+    avgVol = ta.sma(volume, 14)
+    avgVol > 0 ? rawVpi / avgVol * 100 : 0.0
+
+// === Volume Pressure Index (Extended) ===
+// Detailed buying/selling pressure from OHLCV data
+// @param open, high, low, close, volume: OHLCV data
+// @returns: tuple (buyPressure, sellPressure) each 0-100
+export volumePressureIndex(float open, float high, float low, float close, float volume) =>
+    barRange = high - low
+    buyVol = barRange > 0 ? volume * (close - low) / barRange : volume * 0.5
+    sellVol = barRange > 0 ? volume * (high - close) / barRange : volume * 0.5
+    avgBuy = ta.sma(buyVol, 14)
+    avgSell = ta.sma(sellVol, 14)
+    total = avgBuy + avgSell
+    buyP = total > 0 ? avgBuy / total * 100 : 50.0
+    sellP = total > 0 ? avgSell / total * 100 : 50.0
+    [buyP, sellP]
+
+// === Volatility Squeeze Detector ===
+// Detects Bollinger Band / Keltner Channel squeeze
+// @param close: close price
+// @param high: high price
+// @param low: low price
+// @returns: 1=squeeze, 0=normal, -1=expansion
+export squeezeDetector(float close, float high, float low) =>
+    [bbU, bbM, bbL] = ta.bb(close, 20, 2.0)
+    kcUpper = ta.ema(close, 20) + ta.atr(14) * 1.5
+    kcLower = ta.ema(close, 20) - ta.atr(14) * 1.5
+
+    bbWidth = bbU - bbL
+    kcWidth = kcUpper - kcLower
+
+    squeeze  = bbWidth < kcWidth ? 1 : 0
+    expanded = bbWidth > kcWidth * 1.5 ? -1 : 0
+
+    squeeze != 0 ? squeeze : expanded
+
+// === Order Block Detector ===
+// Detects potential institutional order blocks
+// @param open: open price
+// @param close: close price
+// @param high: high price
+// @param low: low price
+// @returns: 1=bullish OB, -1=bearish OB, 0=none
+export orderBlock(float open, float close, float high, float low) =>
+    bullOB = low == ta.lowest(low, 5) and close > open and close[1] < open[1]
+    bearOB = high == ta.highest(high, 5) and close < open and close[1] > open[1]
+    bullOB ? 1 : bearOB ? -1 : 0
+
+// === Liquidity Sweep Detector ===
+// Detects stop hunts / liquidity grabs
+// @param high: high price
+// @param low: low price
+// @param close: close price
+// @param lookback: periods
+// @returns: 1=bullish sweep, -1=bearish sweep, 0=none
+export liquiditySweep(float high, float low, float close, int lookback) =>
+    sweepHigh = high > ta.highest(high[1], lookback) and close < open
+    sweepLow  = low < ta.lowest(low[1], lookback) and close > open
+    sweepLow ? 1 : sweepHigh ? -1 : 0
+
+// === Multi-Timeframe Confluence ===
+// @param symbol: ticker
+// @param tf1, tf2, tf3: timeframes to check
+// @returns: confluence score (0-3)
+export mtfConfluence(string symbol, string tf1, string tf2, string tf3) =>
+    trend1 = request.security(symbol, tf1, close > ta.ema(close, 50))
+    trend2 = request.security(symbol, tf2, close > ta.ema(close, 50))
+    trend3 = request.security(symbol, tf3, close > ta.ema(close, 50))
+    (trend1 ? 1 : 0) + (trend2 ? 1 : 0) + (trend3 ? 1 : 0)

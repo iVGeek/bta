@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+*.log
+logs/
+node_modules/
+.vscode/
+.idea/
+*.swp
+*.swo
+data/

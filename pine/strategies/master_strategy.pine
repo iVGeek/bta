@@ -1,0 +1,844 @@
+// ══════════════════════════════════════════════════════════════════════════════
+// Master Strategy v1.0 — All-in-One Multi-Strategy Engine
+// Author: iVGeek
+// ══════════════════════════════════════════════════════════════════════════════
+//@version=6
+strategy("Master Strategy v1.0", overlay=true, pyramiding=1,
+     default_qty_type=strategy.percent_of_equity, default_qty_value=100,
+     initial_capital=100000, commission_type=strategy.commission.percent,
+     commission_value=0.04, slippage=2, calc_on_every_tick=false,
+     process_orders_on_close=true, max_boxes_count=50, max_lines_count=50,
+     max_labels_count=50, max_bars_back=5000)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── General ──────────────────────────────────────────────────────────────────
+grpGen       = "General"
+botID        = input.string("bot-001", "Bot ID", group=grpGen)
+botSecret    = input.string("secret", "Bot Secret", group=grpGen, tooltip="Auth secret for webhook")
+tradeDir     = input.string("Both", "Trade Direction", options=["Long","Short","Both"], group=grpGen)
+showDashboard = input.bool(true, "Show Dashboard", group=grpGen)
+
+// ── Strategy Toggles ─────────────────────────────────────────────────────────
+grpStrat     = "Strategies"
+useMomentum  = input.bool(true, "Momentum Strategy", group=grpStrat)
+useMeanRev   = input.bool(true, "Mean Reversion Strategy", group=grpStrat)
+useBreakout  = input.bool(true, "Breakout Strategy", group=grpStrat)
+useSmartMoney = input.bool(true, "Smart Money Strategy", group=grpStrat)
+useScalping  = input.bool(false, "Scalping Strategy", group=grpStrat)
+minScore     = input.int(5, "Min Combined Score (0-15)", minval=1, maxval=15, group=grpStrat,
+     tooltip="Minimum combined score across all strategies to trigger a signal")
+
+// ── Timeframes ───────────────────────────────────────────────────────────────
+grpTF        = "Timeframes"
+tf15m        = input.timeframe("15", "MTF TF1", group=grpTF)
+tf1h         = input.timeframe("60", "MTF TF2", group=grpTF)
+tf4h         = input.timeframe("240", "MTF TF3", group=grpTF)
+
+// ── Indicator Parameters ─────────────────────────────────────────────────────
+grpInd       = "Indicators"
+emaFast      = input.int(9, "EMA Fast", minval=1, group=grpInd)
+emaSlow      = input.int(21, "EMA Slow", minval=1, group=grpInd)
+emaTrend     = input.int(200, "EMA Trend", minval=1, group=grpInd)
+rsiLen       = input.int(14, "RSI Length", minval=1, group=grpInd)
+rsiOB        = input.int(70, "RSI Overbought", group=grpInd)
+rsiOS        = input.int(30, "RSI Oversold", group=grpInd)
+macdFast     = input.int(12, "MACD Fast", minval=1, group=grpInd)
+macdSlow     = input.int(26, "MACD Slow", minval=1, group=grpInd)
+macdSig      = input.int(9, "MACD Signal", minval=1, group=grpInd)
+bbLen        = input.int(20, "BB Length", minval=1, group=grpInd)
+bbDev        = input.float(2.0, "BB Deviation", minval=0.1, step=0.1, group=grpInd)
+stochK       = input.int(14, "Stochastic %K", minval=1, group=grpInd)
+stochD       = input.int(3, "Stochastic %D", minval=1, group=grpInd)
+stochSmooth  = input.int(3, "Stochastic Smooth", minval=1, group=grpInd)
+atrLen       = input.int(14, "ATR Length", minval=1, group=grpInd)
+volLen       = input.int(20, "Volume MA Length", minval=1, group=grpInd)
+
+// ── Risk Management ──────────────────────────────────────────────────────────
+grpRisk      = "Risk Management"
+riskMode     = input.string("Kelly", "Position Sizing", options=["Fixed","Kelly","Volatility"], group=grpRisk)
+fixedRisk    = input.float(0.5, "Fixed Risk %", minval=0.01, step=0.1, group=grpRisk)
+kellyFrac    = input.float(0.20, "Kelly Fraction", minval=0.05, maxval=1.0, step=0.05, group=grpRisk,
+     tooltip="Fraction of Kelly Criterion to use (0.25 = quarter Kelly)")
+maxRiskPct   = input.float(1.0, "Max Risk Per Trade %", minval=0.1, step=0.1, group=grpRisk)
+dailyMaxDD   = input.float(5.0, "Daily Max Drawdown %", minval=1.0, step=1.0, group=grpRisk)
+monthlyMaxDD = input.float(10.0, "Monthly Max Drawdown %", minval=1.0, step=1.0, group=grpRisk)
+maxPositions = input.int(1, "Max Concurrent Positions", minval=1, maxval=5, group=grpRisk)
+minRR        = input.float(2.0, "Minimum R:R", minval=0.5, step=0.5, group=grpRisk)
+antiMart     = input.bool(false, "Anti-Martingale After Wins", group=grpRisk)
+winStreak    = input.int(3, "Win Streak for Anti-Martingale", minval=2, group=grpRisk)
+winStreakMult = input.float(1.5, "Anti-Martingale Multiplier", minval=1.0, step=0.1, group=grpRisk)
+
+// ── Exits ────────────────────────────────────────────────────────────────────
+grpExit      = "Exits"
+slMode       = input.string("ATR", "Stop Loss Mode", options=["ATR","Fixed","Percent"], group=grpExit)
+slATRMult    = input.float(1.0, "SL ATR Multiplier", minval=0.5, step=0.1, group=grpExit)
+slFixed      = input.float(30.0, "SL Fixed (points)", minval=1.0, step=1.0, group=grpExit)
+slPct        = input.float(0.75, "SL Percent %", minval=0.1, step=0.1, group=grpExit)
+tpMode       = input.string("ATR", "Take Profit Mode", options=["ATR","Fixed","Percent","R:R"], group=grpExit)
+tpATRMult    = input.float(2.0, "TP ATR Multiplier", minval=1.0, step=0.1, group=grpExit)
+tpFixed      = input.float(80.0, "TP Fixed (points)", minval=1.0, step=1.0, group=grpExit)
+tpPct        = input.float(2.0, "TP Percent %", minval=0.1, step=0.1, group=grpExit)
+tpRR         = input.float(2.0, "TP R:R Ratio", minval=1.0, step=0.5, group=grpExit)
+useTimeExit  = input.bool(true, "Time-Based Exit", group=grpExit)
+timeExitBars = input.int(20, "Exit After X Bars", minval=1, group=grpExit)
+partialEnabled = input.bool(true, "Partial Profit Taking", group=grpExit)
+partial1Pct  = input.float(40.0, "Partial 1 % of Position", minval=10.0, step=5.0, group=grpExit)
+partial1R    = input.float(0.5, "Partial 1 at R Multiple", minval=0.5, step=0.5, group=grpExit)
+partial2Pct  = input.float(30.0, "Partial 2 % of Position", minval=5.0, step=5.0, group=grpExit)
+partial2R    = input.float(1.0, "Partial 2 at R Multiple", minval=1.0, step=0.5, group=grpExit)
+useTrendExit = input.bool(true, "Trend Reversal Exit", group=grpExit)
+useEmExit    = input.bool(true, "Emergency Volatility Exit", group=grpExit)
+emVolMult    = input.float(3.0, "Emergency ATR Multiplier", minval=2.0, step=0.5, group=grpExit)
+
+// ── Trailing Stop ────────────────────────────────────────────────────────────
+grpTrail     = "Trailing Stop"
+useTrailing  = input.bool(true, "Enable Trailing Stop", group=grpTrail)
+trailMode    = input.string("ATR", "Trail Mode", options=["ATR","Percent"], group=grpTrail)
+trailActivate = input.float(0.5, "Trail Activation (R)", minval=0.5, step=0.5, group=grpTrail)
+trailATRMult = input.float(1.0, "Trail ATR Distance", minval=0.3, step=0.1, group=grpTrail)
+trailPct     = input.float(1.0, "Trail Percent %", minval=0.1, step=0.1, group=grpTrail)
+
+// ── Auto Close ─────────────────────────────────────────────────────────────
+grpClose     = "Auto Close"
+useEODClose  = input.bool(true, "Close End of Day", group=grpClose,
+     tooltip="Close all positions before session ends")
+useMaxBars   = input.bool(true, "Max Bars in Trade", group=grpClose)
+maxBarsTrade = input.int(15, "Max Bars", minval=1, group=grpClose)
+useDailyLock = input.bool(true, "Daily Profit Lock", group=grpClose)
+dailyLockPct = input.float(2.0, "Lock Profit at %", minval=0.5, step=0.5, group=grpClose,
+     tooltip="Close all and stop trading when daily P&L reaches this %")
+useMaxLoss   = input.bool(true, "Hard Loss Stop", group=grpClose)
+maxLossPct   = input.float(1.5, "Max Loss Per Trade %", minval=0.1, step=0.1, group=grpClose)
+
+// ── Sessions ─────────────────────────────────────────────────────────────────
+grpSess      = "Sessions"
+useSessFilter = input.bool(false, "Enable Session Filter", group=grpSess)
+londonSess   = input.session("0200-1100", "London Session", group=grpSess)
+nySess       = input.session("0700-1600", "New York Session", group=grpSess)
+asianSess    = input.session("2300-0800", "Asian Session", group=grpSess)
+sessPriority = input.string("London+NY", "Active Sessions",
+     options=["London","New York","Asian","London+NY","All"], group=grpSess)
+avoidFOMC    = input.bool(true, "Avoid FOMC Days", group=grpSess)
+avoidFriday  = input.bool(false, "Avoid Friday PM", group=grpSess)
+fomcDay      = input.int(7, "FOMC Day of Month (approx)", minval=1, maxval=28, group=grpSess)
+
+// ── Smart Money ──────────────────────────────────────────────────────────────
+grpSM        = "Smart Money"
+smLookback   = input.int(50, "SR Lookback Bars", minval=10, group=grpSM)
+smOBLen      = input.int(5, "Order Block Length", minval=1, group=grpSM)
+smLiqLookback = input.int(20, "Liquidity Sweep Lookback", minval=5, group=grpSM)
+showSR       = input.bool(true, "Show S/R Levels", group=grpSM)
+showOB       = input.bool(true, "Show Order Blocks", group=grpSM)
+showLiq      = input.bool(true, "Show Liquidity Sweeps", group=grpSM)
+
+// ── Scalping ─────────────────────────────────────────────────────────────────
+grpScalp     = "Scalping"
+scalpEMA     = input.int(5, "Scalp EMA Fast", minval=1, group=grpScalp)
+scalpEMASlow = input.int(13, "Scalp EMA Slow", minval=1, group=grpScalp)
+scalpRsiLen  = input.int(5, "Scalp RSI Length", minval=1, group=grpScalp)
+scalpBBLen   = input.int(10, "Scalp BB Length", minval=1, group=grpScalp)
+scalpMinVol  = input.float(1.5, "Scalp Min Volume Mult", minval=0.5, step=0.1, group=grpScalp)
+
+// ── Dashboard ────────────────────────────────────────────────────────────────
+grpDash      = "Dashboard"
+dashSize     = input.string("normal", "Dashboard Size", options=["tiny","small","normal","large"], group=grpDash)
+dashBgColor  = input.color(color.new(color.black, 80), "Dashboard BG", group=grpDash)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CORE CALCULATIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+atr          = ta.atr(atrLen)
+atrPct       = atr / close * 100
+emaF         = ta.ema(close, emaFast)
+emaS         = ta.ema(close, emaSlow)
+emaT         = ta.ema(close, emaTrend)
+rsi          = ta.rsi(close, rsiLen)
+[macdLine, macdSignalLine, macdHist] = ta.macd(close, macdFast, macdSlow, macdSig)
+[basis, upper, lower] = ta.bb(close, bbLen, bbDev)
+stochKVal    = ta.sma(ta.stoch(close, high, low, stochK), stochSmooth)
+stochDVal    = ta.sma(stochKVal, stochD)
+volMA        = ta.sma(volume, volLen)
+volRatio     = volume / volMA
+
+// MTF Data
+emaT_15m     = request.security(syminfo.tickerid, tf15m, ta.ema(close, emaTrend))
+emaT_1h      = request.security(syminfo.tickerid, tf1h, ta.ema(close, emaTrend))
+emaT_4h      = request.security(syminfo.tickerid, tf4h, ta.ema(close, emaTrend))
+rsi_1h       = request.security(syminfo.tickerid, tf1h, ta.rsi(close, rsiLen))
+[diPlus, diMinus, adx_1h] = request.security(syminfo.tickerid, tf1h, ta.dmi(14, 14))
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MARKET REGIME DETECTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+bbWidth      = (upper - lower) / basis
+bbWidthSma   = ta.sma(bbWidth, 50)
+isSqueeze    = bbWidth < bbWidthSma * 0.75
+
+[diPlusLoc, diMinusLoc, adx14] = ta.dmi(14, 14)
+isTrending   = adx14 > 25
+isRanging    = adx14 < 20 and not isSqueeze
+isVolatile   = atrPct > ta.sma(atrPct, 50) * 1.5
+
+regime       = isTrending ? 1 : isVolatile ? 2 : 0
+regimeColor  = isTrending ? color.new(color.green, 85) : isVolatile ? color.new(color.orange, 85) : color.new(color.gray, 90)
+
+bgcolor(showDashboard ? regimeColor : na, title="Regime Background")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// MULTI-TIMEFRAME TREND ALIGNMENT
+// ══════════════════════════════════════════════════════════════════════════════
+
+mtfAlignBull = close > emaT and (na(emaT_15m) or close > emaT_15m) and (na(emaT_1h) or close > emaT_1h) and (na(emaT_4h) or close > emaT_4h)
+mtfAlignBear = close < emaT and (na(emaT_15m) or close < emaT_15m) and (na(emaT_1h) or close < emaT_1h) and (na(emaT_4h) or close < emaT_4h)
+
+mtfScore     = 0
+mtfScore    += close > emaT ? 1 : 0
+mtfScore    += na(emaT_15m) ? 0 : close > emaT_15m ? 1 : 0
+mtfScore    += na(emaT_1h) ? 0 : close > emaT_1h ? 1 : 0
+mtfScore    += na(emaT_4h) ? 0 : close > emaT_4h ? 1 : 0
+
+mtfBearScore = 0
+mtfBearScore += close < emaT ? 1 : 0
+mtfBearScore += na(emaT_15m) ? 0 : close < emaT_15m ? 1 : 0
+mtfBearScore += na(emaT_1h) ? 0 : close < emaT_1h ? 1 : 0
+mtfBearScore += na(emaT_4h) ? 0 : close < emaT_4h ? 1 : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STRATEGY 1: MOMENTUM SIGNALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+momBullScore = 0.0
+momBearScore = 0.0
+
+momBullScore += emaF > emaS ? 1.0 : 0.0
+momBullScore += rsi > rsiOB ? 0.0 : rsi > 50 ? 1.0 : 0.0
+momBullScore += macdHist > 0 ? 1.0 : 0.0
+
+momBearScore += emaF < emaS ? 1.0 : 0.0
+momBearScore += rsi < rsiOS ? 0.0 : rsi < 50 ? 1.0 : 0.0
+momBearScore += macdHist < 0 ? 1.0 : 0.0
+
+momBullSignal = useMomentum and momBullScore >= 2
+momBearSignal = useMomentum and momBearScore >= 2
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STRATEGY 2: MEAN REVERSION SIGNALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+mrBullScore  = 0.0
+mrBearScore  = 0.0
+
+mrBullScore += close <= lower ? 1.0 : close <= basis ? 0.5 : 0.0
+mrBullScore += rsi <= rsiOS ? 1.0 : rsi <= 40 ? 0.5 : 0.0
+mrBullScore += stochKVal <= 20 ? 1.0 : stochKVal <= 30 ? 0.5 : 0.0
+
+mrBearScore += close >= upper ? 1.0 : close >= basis ? 0.5 : 0.0
+mrBearScore += rsi >= rsiOB ? 1.0 : rsi >= 60 ? 0.5 : 0.0
+mrBearScore += stochKVal >= 80 ? 1.0 : stochKVal >= 70 ? 0.5 : 0.0
+
+mrBullSignal = useMeanRev and mrBullScore >= 2
+mrBearSignal = useMeanRev and mrBearScore >= 2
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STRATEGY 3: BREAKOUT SIGNALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+highest20    = ta.highest(high, 20)
+lowest20     = ta.lowest(low, 20)
+range20      = highest20 - lowest20
+isTightRange = range20 < atr * 1.5
+
+boBullScore  = 0.0
+boBearScore  = 0.0
+
+boBullScore += close > highest20[1] ? 1.0 : 0.0
+boBullScore += volRatio > 1.5 ? 1.0 : 0.0
+boBullScore += isTightRange or isSqueeze ? 1.0 : 0.0
+
+boBearScore += close < lowest20[1] ? 1.0 : 0.0
+boBearScore += volRatio > 1.5 ? 1.0 : 0.0
+boBearScore += isTightRange or isSqueeze ? 1.0 : 0.0
+
+boBullSignal = useBreakout and boBullScore >= 2
+boBearSignal = useBreakout and boBearScore >= 2
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STRATEGY 4: SMART MONEY SIGNALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// — Liquidity Sweep Detection —
+liqHigh      = ta.highest(high, smLiqLookback)
+liqLow       = ta.lowest(low, smLiqLookback)
+sweepHigh    = high > liqHigh[1] and close < liqHigh[1]
+sweepLow     = low < liqLow[1] and close > liqLow[1]
+
+// — Order Block Detection —
+obBullCond   = close[smOBLen] < open[smOBLen] and close > open and close > close[smOBLen]
+obBearCond   = close[smOBLen] > open[smOBLen] and close < open and close < close[smOBLen]
+obBullOB     = obBullCond ? low : na
+obBearOB     = obBearCond ? high : na
+
+// — Break of Structure —
+bosHigh10    = ta.highest(high, 10)
+bosLow10     = ta.lowest(low, 10)
+bosBull      = close > bosHigh10[1] and close[1] <= bosHigh10[2]
+bosBear      = close < bosLow10[1] and close[1] >= bosLow10[2]
+
+// Smart Money Scores
+smBullScore  = 0.0
+smBearScore  = 0.0
+
+smBullScore += sweepLow ? 1.0 : 0.0
+smBullScore += obBullCond ? 1.0 : 0.0
+smBullScore += bosBull ? 1.0 : 0.0
+
+smBearScore += sweepHigh ? 1.0 : 0.0
+smBearScore += obBearCond ? 1.0 : 0.0
+smBearScore += bosBear ? 1.0 : 0.0
+
+smBullSignal = useSmartMoney and smBullScore >= 2
+smBearSignal = useSmartMoney and smBearScore >= 2
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STRATEGY 5: SCALPING SIGNALS
+// ══════════════════════════════════════════════════════════════════════════════
+
+scalpEMAf    = ta.ema(close, scalpEMA)
+scalpEMAs    = ta.ema(close, scalpEMASlow)
+scalpRsi     = ta.rsi(close, scalpRsiLen)
+[scalpBB, scalpBBU, scalpBBL] = ta.bb(close, scalpBBLen, 2.0)
+
+scBullScore  = 0.0
+scBearScore  = 0.0
+
+scBullScore += scalpEMAf > scalpEMAs and scalpEMAf[1] <= scalpEMAs[1] ? 1.0 : 0.0
+scBullScore += scalpRsi < 40 ? 0.5 : 0.0
+scBullScore += close > scalpBBL and close > scalpBB ? 0.5 : 0.0
+scBullScore += volRatio >= scalpMinVol ? 1.0 : 0.0
+
+scBearScore += scalpEMAf < scalpEMAs and scalpEMAf[1] >= scalpEMAs[1] ? 1.0 : 0.0
+scBearScore += scalpRsi > 60 ? 0.5 : 0.0
+scBearScore += close < scalpBBU and close < scalpBB ? 0.5 : 0.0
+scBearScore += volRatio >= scalpMinVol ? 1.0 : 0.0
+
+scBullSignal = useScalping and scBullScore >= 2
+scBearSignal = useScalping and scBearScore >= 2
+
+// ══════════════════════════════════════════════════════════════════════════════
+// COMBINED SIGNAL SCORING
+// ══════════════════════════════════════════════════════════════════════════════
+
+totalBullScore = (useMomentum ? momBullScore : 0.0) +
+     (useMeanRev ? mrBullScore : 0.0) +
+     (useBreakout ? boBullScore : 0.0) +
+     (useSmartMoney ? smBullScore : 0.0) +
+     (useScalping ? scBullScore : 0.0)
+
+totalBearScore = (useMomentum ? momBearScore : 0.0) +
+     (useMeanRev ? mrBearScore : 0.0) +
+     (useBreakout ? boBearScore : 0.0) +
+     (useSmartMoney ? smBearScore : 0.0) +
+     (useScalping ? scBearScore : 0.0)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SESSION FILTER
+// ══════════════════════════════════════════════════════════════════════════════
+
+inLondon     = not na(time(timeframe.period, londonSess))
+inNY         = not na(time(timeframe.period, nySess))
+inAsian      = not na(time(timeframe.period, asianSess))
+inSession    = useSessFilter ? (sessPriority == "London" ? inLondon :
+     sessPriority == "New York" ? inNY :
+     sessPriority == "Asian" ? inAsian :
+     sessPriority == "London+NY" ? inLondon or inNY :
+     true) : true
+
+dow          = dayofweek
+monthDay     = dayofmonth
+isFOMC       = monthDay >= fomcDay - 1 and monthDay <= fomcDay + 1
+isFridayPM   = dow == dayofweek.friday and hour >= 15
+
+blockDay     = (avoidFOMC and isFOMC) or (avoidFriday and isFridayPM)
+
+sessionOK    = inSession and not blockDay
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RISK MANAGEMENT
+// ══════════════════════════════════════════════════════════════════════════════
+
+// — Daily Drawdown Tracking —
+var float dailyStartEquity = na
+var float monthlyStartEquity = na
+var int lastDay = 0
+var int lastMonth = 0
+
+if dayofmonth != lastDay
+    dailyStartEquity := strategy.equity
+    lastDay := dayofmonth
+if month != lastMonth
+    monthlyStartEquity := strategy.equity
+    lastMonth := month
+
+dailyDD      = dailyStartEquity > 0 ? (dailyStartEquity - strategy.equity) / dailyStartEquity * 100 : 0.0
+monthlyDD    = monthlyStartEquity > 0 ? (monthlyStartEquity - strategy.equity) / monthlyStartEquity * 100 : 0.0
+circuitBreaker = dailyDD >= dailyMaxDD or monthlyDD >= monthlyMaxDD
+
+// — Position Sizing —
+calcSLDist() =>
+    slMode == "ATR" ? atr * slATRMult :
+     slMode == "Fixed" ? slFixed :
+     close * slPct / 100
+
+slDist       = calcSLDist()
+tpDist       = tpMode == "ATR" ? atr * tpATRMult :
+     tpMode == "Fixed" ? tpFixed :
+     tpMode == "Percent" ? close * tpPct / 100 :
+     slDist * tpRR
+
+// — R:R Check —
+actualRR     = slDist > 0 ? tpDist / slDist : 0.0
+rrOK         = actualRR >= minRR
+
+// — Kelly Criterion —
+var float kellyWinRate = 0.5
+var float kellyAvgWin  = 1.0
+var float kellyAvgLoss = 1.0
+var int   kellyTrades  = 0
+var int   kellyWins    = 0
+
+if strategy.closedtrades > kellyTrades
+    newTrades = strategy.closedtrades - kellyTrades
+    for i = 0 to newTrades - 1
+        idx = strategy.closedtrades - newTrades + i
+        pnl = strategy.closedtrades.profit(idx)
+        if pnl > 0
+            kellyWins += 1
+            kellyAvgWin := (kellyAvgWin * 0.9) + (pnl * 0.1)
+        else
+            kellyAvgLoss := (kellyAvgLoss * 0.9) + (math.abs(pnl) * 0.1)
+    kellyWinRate := kellyWins / strategy.closedtrades
+    kellyTrades := strategy.closedtrades
+
+kellyRaw     = kellyAvgLoss > 0 ? (kellyWinRate * kellyAvgWin - (1 - kellyWinRate) * kellyAvgLoss) / kellyAvgWin : 0.0
+kellyPct     = math.max(kellyRaw * kellyFrac * 100, 0.5)
+
+// — Win Streak for Anti-Martingale —
+var int currentWinStreak = 0
+if strategy.closedtrades > 0
+    lastPnl = strategy.closedtrades.profit(strategy.closedtrades - 1)
+    if lastPnl > 0
+        currentWinStreak += 1
+    else
+        currentWinStreak := 0
+
+antiMartMult = antiMart and currentWinStreak >= winStreak ? winStreakMult : 1.0
+
+// — Final Risk Percent —
+rawRiskPct   = riskMode == "Fixed" ? fixedRisk :
+     riskMode == "Kelly" ? kellyPct :
+     math.min(fixedRisk * (atr / ta.sma(atr, 50)), maxRiskPct)
+
+finalRiskPct = math.min(rawRiskPct * antiMartMult, maxRiskPct)
+
+// — Position Size Calculation —
+qtyDollars   = strategy.equity * finalRiskPct / 100
+qtyContracts = slDist > 0 ? qtyDollars / slDist : 0.0
+
+// ══════════════════════════════════════════════════════════════════════════════
+// SIGNAL GENERATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+bullSignal   = totalBullScore >= minScore
+bearSignal   = totalBearScore >= minScore
+
+// Direction filter
+longOK       = tradeDir == "Long" or tradeDir == "Both"
+shortOK      = tradeDir == "Short" or tradeDir == "Both"
+
+// Combined conditions
+trendFilter   = close > emaT
+antiTrend     = close < emaT
+mtfOKLong    = mtfScore >= 3
+mtfOKShort   = mtfBearScore >= 3
+barsSinceEntry = ta.barssince(strategy.opentrades > 0)
+cooldownOK   = na(barsSinceEntry) or barsSinceEntry > 5
+canLong      = bullSignal and longOK and sessionOK and not circuitBreaker and rrOK and strategy.position_size <= 0 and trendFilter and mtfOKLong and cooldownOK
+canShort     = bearSignal and shortOK and sessionOK and not circuitBreaker and rrOK and strategy.position_size >= 0 and antiTrend and mtfOKShort and cooldownOK
+
+// ══════════════════════════════════════════════════════════════════════════════
+// STOP LOSS & TAKE PROFIT
+// ══════════════════════════════════════════════════════════════════════════════
+
+longSL       = close - slDist
+longTP       = close + tpDist
+shortSL      = close + slDist
+shortTP      = close - tpDist
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ENTRY EXECUTION
+// ══════════════════════════════════════════════════════════════════════════════
+
+var float entryPrice   = na
+var float stopLoss     = na
+var float takeProfit   = na
+var int   entryBar     = na
+var bool  partial1Done = false
+var bool  partial2Done = false
+var float trailStop    = na
+
+signalStrength = math.max(totalBullScore, totalBearScore)
+signalConfidence = math.round(signalStrength / 15 * 100)
+
+if canLong
+    strategy.entry("Long", strategy.long, qty=qtyContracts)
+    entryPrice := close
+    stopLoss   := longSL
+    takeProfit := longTP
+    entryBar   := bar_index
+    partial1Done := false
+    partial2Done := false
+    trailStop  := na
+
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long", stop=longSL, limit=longTP)
+
+if canShort
+    strategy.entry("Short", strategy.short, qty=qtyContracts)
+    entryPrice := close
+    stopLoss   := shortSL
+    takeProfit := shortTP
+    entryBar   := bar_index
+    partial1Done := false
+    partial2Done := false
+    trailStop  := na
+
+if strategy.position_size < 0
+    strategy.exit("Short Exit", "Short", stop=shortSL, limit=shortTP)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// EXIT MANAGEMENT
+// ══════════════════════════════════════════════════════════════════════════════
+
+isLong       = strategy.position_size > 0
+isShort      = strategy.position_size < 0
+barsInTrade  = isLong or isShort ? bar_index - entryBar : 0
+unrealizedR  = entryPrice > 0 and slDist > 0 ? (isLong ? (close - entryPrice) / slDist : (entryPrice - close) / slDist) : 0.0
+
+// — Partial Profit Taking —
+if partialEnabled and isLong and not partial1Done and unrealizedR >= partial1R
+    strategy.close("Long", comment="Partial 1R", qty_percent=partial1Pct)
+    partial1Done := true
+
+if partialEnabled and isLong and not partial2Done and unrealizedR >= partial2R
+    strategy.close("Long", comment="Partial 2R", qty_percent=partial2Pct)
+    partial2Done := true
+
+if partialEnabled and isShort and not partial1Done and unrealizedR >= partial1R
+    strategy.close("Short", comment="Partial 1R", qty_percent=partial1Pct)
+    partial1Done := true
+
+if partialEnabled and isShort and not partial2Done and unrealizedR >= partial2R
+    strategy.close("Short", comment="Partial 2R", qty_percent=partial2Pct)
+    partial2Done := true
+
+// — Time-Based Exit —
+if useTimeExit and barsInTrade >= timeExitBars and (isLong or isShort)
+    if isLong
+        strategy.close("Long", comment="Time Exit")
+    if isShort
+        strategy.close("Short", comment="Time Exit")
+
+// — Trend Reversal Exit —
+if useTrendExit and isLong and bearSignal and totalBearScore >= 2
+    strategy.close("Long", comment="Trend Rev Exit")
+
+if useTrendExit and isShort and bullSignal and totalBullScore >= 2
+    strategy.close("Short", comment="Trend Rev Exit")
+
+// — Trailing Stop —
+if useTrailing and (isLong or isShort)
+    trailDistance = trailMode == "ATR" ? atr * trailATRMult : close * trailPct / 100
+
+    if isLong and unrealizedR >= trailActivate
+        newTrail = close - trailDistance
+        trailStop := na(trailStop) ? newTrail : math.max(trailStop, newTrail)
+        if close <= trailStop
+            strategy.close("Long", comment="Trailing SL")
+
+    if isShort and unrealizedR >= trailActivate
+        newTrail = close + trailDistance
+        trailStop := na(trailStop) ? newTrail : math.min(trailStop, newTrail)
+        if close >= trailStop
+            strategy.close("Short", comment="Trailing SL")
+
+// — Emergency Volatility Exit —
+if useEmExit and (isLong or isShort)
+    if atr > atr[1] * emVolMult
+        if isLong
+            strategy.close("Long", comment="EM Exit")
+        if isShort
+            strategy.close("Short", comment="EM Exit")
+
+// — Circuit Breaker Exit —
+if circuitBreaker and (isLong or isShort)
+    if isLong
+        strategy.close("Long", comment="Circuit Breaker")
+    if isShort
+        strategy.close("Short", comment="Circuit Breaker")
+
+isNewDay = dayofmonth != dayofmonth[1]
+
+// — Max Bars in Trade —
+if useMaxBars and (isLong or isShort) and barsInTrade >= maxBarsTrade
+    if isLong
+        strategy.close("Long", comment="Max Bars Exit")
+    if isShort
+        strategy.close("Short", comment="Max Bars Exit")
+
+// — End of Day Close —
+if useEODClose and (isLong or isShort) and isNewDay
+    if isLong
+        strategy.close("Long", comment="EOD Close")
+    if isShort
+        strategy.close("Short", comment="EOD Close")
+
+// — Hard Loss Stop Per Trade —
+if useMaxLoss and (isLong or isShort) and entryPrice > 0
+    lossPct = isLong ? (entryPrice - close) / entryPrice * 100 : (close - entryPrice) / entryPrice * 100
+    if lossPct >= maxLossPct
+        if isLong
+            strategy.close("Long", comment="Hard Loss Stop")
+        if isShort
+            strategy.close("Short", comment="Hard Loss Stop")
+
+// — Daily Profit Lock —
+var float dayStartEquity = strategy.equity
+if useDailyLock
+    if isNewDay
+        dayStartEquity := strategy.equity
+    dailyPnl = (strategy.equity - dayStartEquity) / dayStartEquity * 100
+    if dailyPnl >= dailyLockPct and (isLong or isShort)
+        if isLong
+            strategy.close("Long", comment="Daily Lock")
+        if isShort
+            strategy.close("Short", comment="Daily Lock")
+
+// ══════════════════════════════════════════════════════════════════════════════
+// VISUALIZATION
+// ══════════════════════════════════════════════════════════════════════════════
+
+// — Core EMAs —
+plot(emaF, "EMA Fast", color=color.new(color.blue, 20), linewidth=1)
+plot(emaS, "EMA Slow", color=color.new(color.orange, 20), linewidth=1)
+plot(emaT, "EMA Trend", color=color.new(color.white, 40), linewidth=2)
+
+// — Bollinger Bands —
+pBasis = plot(basis, "BB Basis", color=color.new(color.gray, 60))
+pUpper = plot(upper, "BB Upper", color=color.new(color.gray, 70))
+pLower = plot(lower, "BB Lower", color=color.new(color.gray, 70))
+fill(pUpper, pLower, color=isSqueeze ? color.new(color.purple, 90) : color.new(color.gray, 95))
+
+// — Entry Markers —
+plotshape(canLong and not isLong[1], "Long Entry", shape.triangleup, location.belowbar,
+     color.new(color.lime, 0), size=size.normal, text="BUY")
+plotshape(canShort and not isShort[1], "Short Entry", shape.triangledown, location.abovebar,
+     color.new(color.red, 0), size=size.normal, text="SELL")
+
+// — Exit Markers —
+plotshape(isLong[1] and not isLong, "Long Exit Marker", shape.xcross, location.abovebar,
+     color.new(color.red, 30), size=size.small, text="EXIT L")
+plotshape(isShort[1] and not isShort, "Short Exit Marker", shape.xcross, location.belowbar,
+     color.new(color.lime, 30), size=size.small, text="EXIT S")
+
+// — Signal Labels —
+plotshape(momBullSignal and not momBullSignal[1], "Momentum Long", shape.diamond,
+     location.belowbar, color.new(color.aqua, 20), size=size.tiny, text="Mom")
+plotshape(mrBullSignal and not mrBullSignal[1], "MeanRev Long", shape.diamond,
+     location.belowbar, color.new(color.yellow, 20), size=size.tiny, text="MR")
+plotshape(boBullSignal and not boBullSignal[1], "Breakout Long", shape.diamond,
+     location.belowbar, color.new(color.fuchsia, 20), size=size.tiny, text="BO")
+plotshape(smBullSignal and not smBullSignal[1], "Smart Money Long", shape.diamond,
+     location.belowbar, color.new(color.teal, 20), size=size.tiny, text="SM")
+
+plotshape(momBearSignal and not momBearSignal[1], "Momentum Short", shape.diamond,
+     location.abovebar, color.new(color.aqua, 20), size=size.tiny, text="Mom")
+plotshape(mrBearSignal and not mrBearSignal[1], "MeanRev Short", shape.diamond,
+     location.abovebar, color.new(color.yellow, 20), size=size.tiny, text="MR")
+plotshape(boBearSignal and not boBearSignal[1], "Breakout Short", shape.diamond,
+     location.abovebar, color.new(color.fuchsia, 20), size=size.tiny, text="BO")
+plotshape(smBearSignal and not smBearSignal[1], "Smart Money Short", shape.diamond,
+     location.abovebar, color.new(color.teal, 20), size=size.tiny, text="SM")
+
+// — Order Blocks —
+if showOB
+    if not na(obBullOB)
+        label.new(bar_index, obBullOB, "OB", color=color.new(color.green, 60),
+             textcolor=color.white, style=label.style_label_up, size=size.tiny)
+    if not na(obBearOB)
+        label.new(bar_index, obBearOB, "OB", color=color.new(color.red, 60),
+             textcolor=color.white, style=label.style_label_down, size=size.tiny)
+
+// — Liquidity Sweeps —
+if showLiq
+    if sweepHigh
+        label.new(bar_index, high, "Sweep", color=color.new(color.red, 30),
+             textcolor=color.white, style=label.style_label_down, size=size.small)
+    if sweepLow
+        label.new(bar_index, low, "Sweep", color=color.new(color.green, 30),
+             textcolor=color.white, style=label.style_label_up, size=size.small)
+
+// — S/R Levels —
+var line srHighLine = na
+var line srLowLine  = na
+var label srHighLabel = na
+var label srLowLabel  = na
+
+if showSR
+    pivotHigh = ta.pivothigh(high, smLookback, smLookback)
+    pivotLow  = ta.pivotlow(low, smLookback, smLookback)
+
+    if not na(pivotHigh)
+        if not na(srHighLine)
+            line.delete(srHighLine)
+        if not na(srHighLabel)
+            label.delete(srHighLabel)
+        srHighLine  := line.new(bar_index - smLookback, pivotHigh, bar_index, pivotHigh,
+             color=color.new(color.red, 40), style=line.style_dashed, width=1)
+        srHighLabel := label.new(bar_index, pivotHigh, str.tostring(pivotHigh, format.mintick),
+             color=color.new(color.red, 80), textcolor=color.red, style=label.style_label_left, size=size.tiny)
+
+    if not na(pivotLow)
+        if not na(srLowLine)
+            line.delete(srLowLine)
+        if not na(srLowLabel)
+            label.delete(srLowLabel)
+        srLowLine  := line.new(bar_index - smLookback, pivotLow, bar_index, pivotLow,
+             color=color.new(color.green, 40), style=line.style_dashed, width=1)
+        srLowLabel := label.new(bar_index, pivotLow, str.tostring(pivotLow, format.mintick),
+             color=color.new(color.green, 80), textcolor=color.green, style=label.style_label_left, size=size.tiny)
+
+// — Squeeze Dot —
+plotshape(isSqueeze, "Squeeze", shape.circle, location.belowbar,
+     color.new(color.purple, 0), size=size.tiny)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ══════════════════════════════════════════════════════════════════════════════
+
+if showDashboard and barstate.islast
+    var table dash = table.new(dashSize == "tiny" ? position.top_right : position.top_right,
+         2, 16, bgcolor=dashBgColor, border_width=1, border_color=color.new(color.gray, 50))
+
+    txtSize = dashSize == "tiny" ? size.tiny : dashSize == "small" ? size.small : dashSize == "large" ? size.large : size.normal
+
+    regText  = isTrending ? "Trending" : isVolatile ? "Volatile" : "Ranging"
+    regCol   = isTrending ? color.green : isVolatile ? color.orange : color.gray
+
+    table.cell(dash, 0, 0, "Master Strategy", text_size=txtSize, text_color=color.white, bgcolor=color.new(color.blue, 30))
+    table.cell(dash, 1, 0, "v1.0", text_size=txtSize, text_color=color.white, bgcolor=color.new(color.blue, 30))
+
+    table.cell(dash, 0, 1, "Regime", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 1, regText, text_size=txtSize, text_color=regCol)
+
+    table.cell(dash, 0, 2, "ADX", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 2, str.tostring(adx14, "#.#"), text_size=txtSize, text_color=color.white)
+
+    table.cell(dash, 0, 3, "Squeeze", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 3, isSqueeze ? "YES" : "no", text_size=txtSize, text_color=isSqueeze ? color.purple : color.gray)
+
+    table.cell(dash, 0, 4, "MTF Align", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 4, str.tostring(mtfScore) + "/" + str.tostring(mtfBearScore),
+         text_size=txtSize, text_color=mtfScore > mtfBearScore ? color.green : mtfBearScore > mtfScore ? color.red : color.gray)
+
+    table.cell(dash, 0, 5, "Bull Score", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 5, str.tostring(totalBullScore, "#.#"), text_size=txtSize,
+         text_color=totalBullScore >= minScore ? color.lime : color.gray)
+
+    table.cell(dash, 0, 6, "Bear Score", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 6, str.tostring(totalBearScore, "#.#"), text_size=txtSize,
+         text_color=totalBearScore >= minScore ? color.red : color.gray)
+
+    momCol  = momBullSignal ? color.lime : momBearSignal ? color.red : color.gray
+    mrCol   = mrBullSignal ? color.lime : mrBearSignal ? color.red : color.gray
+    boCol   = boBullSignal ? color.lime : boBearSignal ? color.red : color.gray
+    smCol   = smBullSignal ? color.lime : smBearSignal ? color.red : color.gray
+    scCol   = scBullSignal ? color.lime : scBearSignal ? color.red : color.gray
+
+    table.cell(dash, 0, 7, "Mom", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 7, momBullSignal ? "LONG" : momBearSignal ? "SHORT" : "—",
+         text_size=txtSize, text_color=momCol)
+
+    table.cell(dash, 0, 8, "MeanRev", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 8, mrBullSignal ? "LONG" : mrBearSignal ? "SHORT" : "—",
+         text_size=txtSize, text_color=mrCol)
+
+    table.cell(dash, 0, 9, "Breakout", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 9, boBullSignal ? "LONG" : boBearSignal ? "SHORT" : "—",
+         text_size=txtSize, text_color=boCol)
+
+    table.cell(dash, 0, 10, "SmartMoney", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 10, smBullSignal ? "LONG" : smBearSignal ? "SHORT" : "—",
+         text_size=txtSize, text_color=smCol)
+
+    table.cell(dash, 0, 11, "Scalping", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 11, scBullSignal ? "LONG" : scBearSignal ? "SHORT" : "—",
+         text_size=txtSize, text_color=scCol)
+
+    posText = isLong ? "LONG" : isShort ? "SHORT" : "FLAT"
+    posCol  = isLong ? color.lime : isShort ? color.red : color.gray
+    table.cell(dash, 0, 12, "Position", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 12, posText, text_size=txtSize, text_color=posCol)
+
+    table.cell(dash, 0, 13, "R:R", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 13, str.tostring(actualRR, "#.#") + ":1",
+         text_size=txtSize, text_color=rrOK ? color.lime : color.red)
+
+    table.cell(dash, 0, 14, "Risk %", text_size=txtSize, text_color=color.white)
+    table.cell(dash, 1, 14, str.tostring(finalRiskPct, "#.#") + "%",
+         text_size=txtSize, text_color=color.white)
+
+    table.cell(dash, 0, 15, "DD " + str.tostring(dailyDD, "#.#") + "%",
+         text_size=txtSize, text_color=dailyDD > dailyMaxDD * 0.7 ? color.red : color.white)
+    table.cell(dash, 1, 15, circuitBreaker ? "BLOCKED" : "OK",
+         text_size=txtSize, text_color=circuitBreaker ? color.red : color.lime)
+
+// ══════════════════════════════════════════════════════════════════════════════
+// WEBHOOK PAYLOADS
+// ══════════════════════════════════════════════════════════════════════════════
+
+signalType = bullSignal ? "buy" : bearSignal ? "sell" : "none"
+strategiesActive = str.replace_all(
+     (useMomentum and (momBullSignal or momBearSignal) ? "Mom " : "") +
+     (useMeanRev and (mrBullSignal or mrBearSignal) ? "MR " : "") +
+     (useBreakout and (boBullSignal or boBearSignal) ? "BO " : "") +
+     (useSmartMoney and (smBullSignal or smBearSignal) ? "SM " : "") +
+     (useScalping and (scBullSignal or scBearSignal) ? "SC " : ""),
+     " ", ",")
+
+entryJSON   = '{"bot_id":"' + botID + '","secret":"' + botSecret + '","signal":"' + signalType + '","symbol":"' + syminfo.tickerid + '","confidence":' + str.tostring(signalConfidence) + ',"strategy":"Master","sub_strategies":"' + strategiesActive + '","timeframe":"' + timeframe.period + '","price":' + str.tostring(close) + ',"sl":' + str.tostring(bullSignal ? longSL : shortSL) + ',"tp":' + str.tostring(bullSignal ? longTP : shortTP) + ',"risk_pct":' + str.tostring(finalRiskPct) + ',"score":' + str.tostring(math.max(totalBullScore, totalBearScore)) + ',"regime":"' + (isTrending ? "trending" : isVolatile ? "volatile" : "ranging") + '","mtf_alignment":' + str.tostring(math.max(mtfScore, mtfBearScore)) + '}'
+
+exitJSON    = '{"bot_id":"' + botID + '","secret":"' + botSecret + '","signal":"exit","symbol":"' + syminfo.tickerid + '","strategy":"Master","timeframe":"' + timeframe.period + '","price":' + str.tostring(close) + ',"bars_held":' + str.tostring(barsInTrade) + '}'
+
+haltJSON    = '{"bot_id":"' + botID + '","secret":"' + botSecret + '","signal":"halt","symbol":"' + syminfo.tickerid + '","strategy":"Master","reason":"circuit_breaker","daily_dd":' + str.tostring(dailyDD) + ',"monthly_dd":' + str.tostring(monthlyDD) + '}'
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ALERTS
+// ══════════════════════════════════════════════════════════════════════════════
+
+// — Alerts (conditional, fire only on signal) —
+if canLong or canShort
+    alert(entryJSON, alert.freq_once_per_bar)
+
+if isLong[1] and not isLong
+    alert(exitJSON, alert.freq_once_per_bar)
+
+if isShort[1] and not isShort
+    alert(exitJSON, alert.freq_once_per_bar)
+
+if circuitBreaker
+    alert(haltJSON, alert.freq_once_per_bar)

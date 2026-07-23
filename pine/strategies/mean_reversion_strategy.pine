@@ -1,0 +1,202 @@
+//@version=6
+// iVGeek Mean Reversion Strategy v2 — Bounces from extremes with BB/RSI/Stoch/StochRSI
+// Best for: ranging markets, oversold bounces, overbought rejections
+// Improvements: squeeze detector, BB width filter, StochRSI, partial exits,
+//               volume pressure, precise trend filter
+// ============================================================
+strategy(
+  title="iVGeek Mean Reversion Strategy v2",
+  shorttitle="iVGeek MR v2",
+  overlay=true,
+  pyramiding=1,
+  default_qty_type=strategy.percent_of_equity,
+  default_qty_value=100,
+  initial_capital=10000,
+  commission_type=strategy.commission.percent,
+  commission_value=0.1,
+  slippage=2
+)
+
+// ── Inputs ──────────────────────────────────────────────────
+// Bollinger Bands
+bbLen    = input.int(20,     "BB Length",              group="Bollinger Bands")
+bbStd    = input.float(2.0,  "BB StdDev",              group="Bollinger Bands")
+
+// RSI
+rsiLen   = input.int(14,     "RSI Period",             group="RSI")
+rsiOb    = input.int(70,     "RSI Overbought",         group="RSI")
+rsiOs    = input.int(30,     "RSI Oversold",           group="RSI")
+
+// Stochastic
+stochLen = input.int(14,     "Stochastic K",           group="Stochastic")
+stochSm  = input.int(3,      "Stochastic D",           group="Stochastic")
+stochOb  = input.int(80,     "Stoch Overbought",       group="Stochastic")
+stochOs  = input.int(20,     "Stoch Oversold",         group="Stochastic")
+
+// Stochastic RSI
+stochRsiLen = input.int(14,  "StochRSI RSI Length",    group="Stochastic RSI")
+stochRsiK   = input.int(3,   "StochRSI K Smooth",      group="Stochastic RSI")
+stochRsiD   = input.int(3,   "StochRSI D Smooth",      group="Stochastic RSI")
+stochRsiOb  = input.int(80,  "StochRSI Overbought",    group="Stochastic RSI")
+stochRsiOs  = input.int(20,  "StochRSI Oversold",      group="Stochastic RSI")
+
+// Volume
+volMult  = input.float(1.2,  "Volume Confirm Mult",    minval=1.0, group="Volume")
+
+// Distance
+minBbDist = input.float(0.3, "Min Distance from BB %", minval=0.0, group="Entry")
+
+// Trend / Regime
+useRegimeFilter   = input.bool(true,  "Regime Filter (avoid strong trends)", group="Filters")
+adxLen            = input.int(14,     "ADX Period",                         group="Filters")
+adxMax            = input.float(25.0, "ADX Max for Ranging",                group="Filters")
+adxTrendMin       = input.float(30.0, "ADX Strong Trend Avoid",             group="Filters")
+
+// Squeeze detector
+useSqueezeFilter  = input.bool(true,  "Squeeze Detector (avoid compressed)", group="Squeeze")
+squeezeLen        = input.int(20,     "Squeeze BB Length",                   group="Squeeze")
+squeezeAtrLen     = input.int(20,     "Squeeze ATR Length",                  group="Squeeze")
+squeezeKcMult     = input.float(1.5,  "Keltner Channel Mult",              group="Squeeze")
+
+// BB Width filter
+useBbWidthFilter  = input.bool(true,  "BB Width Filter (expanding only)",   group="BB Width")
+bbWidthMin        = input.float(0.0,  "Min BB Width %",                     group="BB Width")
+
+// Risk management
+slAtrMult = input.float(1.5, "ATR Stop Multiplier",  minval=0.5, group="Risk")
+tpAtrMult = input.float(2.5, "ATR TP Multiplier",    minval=0.5, group="Risk")
+
+// Partial exit
+usePartialExit    = input.bool(true,  "Partial Profit at BB Mid",          group="Exit")
+partialPct        = input.float(50.0, "Partial Exit %",                    group="Exit", minval=10, maxval=90)
+
+// ── Indicators ──────────────────────────────────────────────
+[bbU, bbM, bbL] = ta.bb(close, bbLen, bbStd)
+rsi             = ta.rsi(close, rsiLen)
+sk              = ta.stoch(close, high, low, stochLen)
+sd              = ta.sma(sk, stochSm)
+avgV            = ta.sma(volume, 20)
+vRatio          = volume / avgV
+atrVal          = ta.atr(14)
+
+// Stochastic RSI
+rsiForStoch     = ta.rsi(close, stochRsiLen)
+stochRsiK       = ta.sma(ta.stoch(rsiForStoch, rsiForStoch, rsiForStoch, stochRsiLen), stochRsiK)
+stochRsiD       = ta.sma(stochRsiK, stochRsiD)
+stochRsiOversold  = stochRsiK < stochRsiOs and stochRsiD < stochRsiOs
+stochRsiOverbought = stochRsiK > stochRsiOb and stochRsiD > stochRsiOb
+
+// BB Width (expansion detection)
+bbWidth     = (bbU - bbL) / bbM * 100
+bbWidthPrev = bbWidth[1]
+bbExpanding = bbWidth > bbWidthPrev
+bbWidthOk   = useBbWidthFilter ? (bbWidth > bbWidthMin and bbExpanding) : true
+
+// Distance from BB
+distFromBBLowerPct = (close - bbL) / close * 100
+distFromBBUpperPct = (bbU - close) / close * 100
+
+// ── Squeeze Detector ────────────────────────────────────────
+// Squeeze = BB inside Keltner Channels (volatility compression)
+kcUpper = ta.ema(close, squeezeAtrLen) + squeezeKcMult * ta.atr(squeezeAtrLen)
+kcLower = ta.ema(close, squeezeAtrLen) - squeezeKcMult * ta.atr(squeezeAtrLen)
+squeezeOn  = bbU < kcUpper and bbL > kcLower
+squeezeOff = not squeezeOn
+// Just released from squeeze — expansion beginning
+squeezeRelease = squeezeOn[1] and squeezeOff
+squeezeFilter  = useSqueezeFilter ? squeezeOff : true
+
+// ── Trend / Regime Filter ───────────────────────────────────
+adxVal    = ta.adx(high, low, close, adxLen)
+diPlus    = ta.dmi(adxLen, adxLen).plus
+diMinus   = ta.dmi(adxLen, adxLen).minus
+strongTrend = adxVal > adxTrendMin
+ranging     = adxVal < adxMax and not strongTrend
+
+// ── Volume Analysis ─────────────────────────────────────────
+// Buying/selling pressure: close relative to bar range
+buyPressure  = (close - low) / (high - low + 0.0001)
+sellPressure = (high - close) / (high - low + 0.0001)
+avgBuyP      = ta.sma(buyPressure, 14)
+avgSellP     = ta.sma(sellPressure, 14)
+buyingDominant  = avgBuyP > avgSellP
+sellingDominant = avgSellP > avgBuyP
+
+// ── Signals ─────────────────────────────────────────────────
+// Long: price at/under lower BB + oversold RSI + oversold stochastic + StochRSI oversold
+longCond  = close <= bbL and rsi < rsiOs and sk < stochOs and sd < stochOs and stochRsiOversold and vRatio > volMult and distFromBBLowerPct >= minBbDist and buyingDominant
+
+// Short: price at/over upper BB + overbought RSI + overbought stochastic + StochRSI overbought
+shortCond = close >= bbU and rsi > rsiOb and sk > stochOb and sd > stochOb and stochRsiOverbought and vRatio > volMult and distFromBBUpperPct >= minBbDist and sellingDominant
+
+// Apply filters
+if useRegimeFilter
+    longCond  := longCond and ranging
+    shortCond := shortCond and ranging
+
+longCond  := longCond  and squeezeFilter and bbWidthOk
+shortCond := shortCond and squeezeFilter and bbWidthOk
+
+// ── Exits ───────────────────────────────────────────────────
+// Partial profit at BB mid, remainder at full TP
+exitLong      = close >= bbM or rsi > 50
+exitShort     = close <= bbM or rsi < 50
+partialFilled = false
+
+// ── Risk Management ─────────────────────────────────────────
+longSl   = strategy.position_avg_price - atrVal * slAtrMult
+longTp   = strategy.position_avg_price + atrVal * tpAtrMult
+shortSl  = strategy.position_avg_price + atrVal * slAtrMult
+shortTp  = strategy.position_avg_price - atrVal * tpAtrMult
+
+// ── Execution ───────────────────────────────────────────────
+if longCond and strategy.position_size == 0
+    strategy.entry("Long MR", strategy.long)
+    strategy.exit("Long-X",    "Long MR", stop=longSl, limit=longTp)
+    strategy.exit("Long-Part", "Long MR", limit=bbM, qty_percent=partialPct)
+
+if shortCond and strategy.position_size == 0
+    strategy.entry("Short MR", strategy.short)
+    strategy.exit("Short-X",    "Short MR", stop=shortSl, limit=shortTp)
+    strategy.exit("Short-Part", "Short MR", limit=bbM, qty_percent=partialPct)
+
+// Mean reversion full exit
+if strategy.position_size > 0 and exitLong
+    strategy.close("Long MR", comment="MR Exit Long")
+if strategy.position_size < 0 and exitShort
+    strategy.close("Short MR", comment="MR Exit Short")
+
+// ── Alerts ──────────────────────────────────────────────────
+alertcondition(longCond,  "MR Buy",  "MR BUY  {{ticker}} @ {{close}} | BB Dist=" + str.tostring(distFromBBLowerPct, "#.00") + "% | BB Width=" + str.tostring(bbWidth, "#.00") + " | ADX=" + str.tostring(adxVal, "#.0") + " | StochRSI=" + str.tostring(stochRsiK, "#.0"))
+alertcondition(shortCond, "MR Sell", "MR SELL {{ticker}} @ {{close}} | BB Dist=" + str.tostring(distFromBBUpperPct, "#.00") + "% | BB Width=" + str.tostring(bbWidth, "#.00") + " | ADX=" + str.tostring(adxVal, "#.0") + " | StochRSI=" + str.tostring(stochRsiK, "#.0"))
+alertcondition(squeezeRelease, "Squeeze Release", "SQUEEZE RELEASE {{ticker}} @ {{close}} — volatility expanding")
+
+// ── Visualization ───────────────────────────────────────────
+plot(bbM, "BB Mid",   color.new(#607D8B, 30), linewidth=1)
+uPlot = plot(bbU, "BB Upper", color.new(#F44336, 30))
+lPlot = plot(bbL, "BB Lower", color.new(#4CAF50, 30))
+fill(uPlot, lPlot, color.new(#9E9E9E, 95))
+
+// BB Width indicator
+plot(bbWidth, "BB Width", color.new(#9C27B0, 50), display=display.data_window)
+
+// Squeeze dots on chart
+plotshape(useSqueezeFilter and squeezeOn,  style=shape.circle, location=location.belowbar,
+  color=color.new(#FF9800, 30), size=size.tiny, title="Squeeze On")
+plotshape(useSqueezeFilter and squeezeRelease, style=shape.diamond, location=location.belowbar,
+  color=color.new(#2196F3, 0), size=size.small, title="Squeeze Release")
+
+// Entry signals
+plotshape(longCond,  style=shape.labelup,   location=location.belowbar,
+  color=color.new(#4CAF50, 10), text="MR", textcolor=color.white, size=size.small)
+plotshape(shortCond, style=shape.labeldown, location=location.abovebar,
+  color=color.new(#F44336, 10), text="MR", textcolor=color.white, size=size.small)
+
+// Volume pressure bar coloring
+volColor = buyingDominant ? color.new(#4CAF50, 50) : sellingDominant ? color.new(#F44336, 50) : color.new(#607D8B, 70)
+plotshape(vRatio > volMult, style=shape.diamond, location=location.bottom,
+  color=volColor, size=size.tiny, title="Volume Surge")
+
+// Regime background
+regimeColor = strongTrend ? color.new(#F44336, 93) : ranging ? color.new(#4CAF50, 95) : na
+bgcolor(useRegimeFilter ? regimeColor : na, title="Regime Background")
