@@ -3,6 +3,8 @@ Signal processor — validates incoming TradingView signals, runs through Claude
 """
 import logging
 import time
+import os
+import json
 from datetime import datetime, date
 from typing import Optional
 from config import ExchangeConfig
@@ -32,6 +34,50 @@ class SignalProcessor:
         self.last_reset_day = date.today()
         self.open_orders: dict[str, dict] = {}
         self.ai_enabled = ai is not None
+        self._state_file = getattr(config, "state_file", None) or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "executor_state.json")
+        self._load_state()
+
+    def _load_state(self):
+        try:
+            if not os.path.exists(self._state_file):
+                return
+            with open(self._state_file, encoding="utf-8") as f:
+                data = json.load(f)
+            self.daily_pnl = float(data.get("daily_pnl", 0.0))
+            self.daily_trade_count = int(data.get("daily_trade_count", 0))
+            self.last_reset_day = date.fromisoformat(data.get("last_reset_day", date.today().isoformat()))
+            for rec in data.get("trade_log", []):
+                t = rec.get("timestamp", 0)
+                self.trade_log.append(TradeRecord(
+                    signal=rec.get("signal", {}),
+                    result=rec.get("result", {}),
+                    timestamp=t,
+                    ai_decision=rec.get("ai_decision", {})))
+            logger.info(f"[state] Loaded: daily_pnl={self.daily_pnl:.2f}, "
+                        f"daily_trades={self.daily_trade_count}, log={len(self.trade_log)}")
+        except Exception as e:
+            logger.warning(f"[state] Failed to load executor state: {e}")
+
+    def _save_state(self):
+        try:
+            tmp = self._state_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({
+                    "daily_pnl": round(self.daily_pnl, 2),
+                    "daily_trade_count": self.daily_trade_count,
+                    "last_reset_day": self.last_reset_day.isoformat(),
+                    "trade_log": [
+                        {"timestamp": t.timestamp,
+                         "signal": {k: v for k, v in t.signal.items() if k != "secret"},
+                         "result": t.result,
+                         "ai_decision": t.ai_decision}
+                        for t in self.trade_log[-200:]
+                    ],
+                }, f)
+            os.replace(tmp, self._state_file)
+        except Exception as e:
+            logger.warning(f"[state] Failed to save executor state: {e}")
 
     def _reset_daily(self):
         today = date.today()
@@ -86,7 +132,8 @@ class SignalProcessor:
         # Log
         record = TradeRecord(signal, result, time.time(), ai_decision)
         self.trade_log.append(record)
-        self.daily_trade_count += 1
+        if signal_type in ("buy", "sell") and not str(result.get("status", "")).startswith(("rejected", "error", "no_position")):
+            self.daily_trade_count += 1
 
         # Track daily P&L from closed trades
         trade_pnl = result.get("pnl", result.get("unrealizedPnl", 0)) or 0
@@ -98,6 +145,7 @@ class SignalProcessor:
             outcome = "win" if result.get("status") != "error" else "loss"
             self.ai.log_trade(signal, result, outcome)
 
+        self._save_state()
         logger.info(f"Signal processed: {signal_type} {symbol} -> {result.get('status', result.get('error', 'unknown'))}")
         return result
 
@@ -298,6 +346,8 @@ class SignalProcessor:
         except Exception as e:
             return {"error": str(e), "partial": results}
 
+        self._save_state()
+        self.open_orders.clear()
         return {"status": "halt_executed", "closed": len(results), "details": results}
 
     def _calc_size(self, symbol, price, sl, risk_pct, ex, exchange_name) -> Optional[float]:

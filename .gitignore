@@ -11,3 +11,4 @@ node_modules/
 *.swo
 data/
 bot_state.json
+executor/executor_state.json

@@ -1,6 +1,9 @@
 import sys, os
 sys.path.insert(0, "C:/iVGeek/trading-bot/executor")
 os.chdir("C:/iVGeek/trading-bot/executor")
+_STATE = "C:/iVGeek/trading-bot/executor/executor_state.json"
+if os.path.exists(_STATE):
+    os.remove(_STATE)  # deterministic baseline: no persisted state at start
 from fastapi.testclient import TestClient
 from server import app, config, processor
 
@@ -85,5 +88,35 @@ for raw, want in cases.items():
 ex = sp.exchanges.get_exchange("binance")
 assert len(ex.markets) > 1000, f"binance should have loaded futures markets, got {len(ex.markets)}"
 print("11. Binance futures markets loaded:", len(ex.markets), "instruments")
+
+# State persistence: risk counters + trade log survive a processor restart
+state_file = sp._state_file
+import json, os
+assert os.path.exists(state_file), "state file should be written after signals"
+with open(state_file, encoding="utf-8") as f:
+    saved = json.load(f)
+assert saved["daily_trade_count"] >= 3, saved["daily_trade_count"]
+assert len(saved["trade_log"]) >= 4, len(saved["trade_log"])
+assert "secret" not in json.dumps(saved), "state must not persist webhook secrets"
+print(f"12. State persisted: daily_trades={saved['daily_trade_count']}, log={len(saved['trade_log'])}, no secrets")
+
+from processor import SignalProcessor
+fresh = SignalProcessor(config, sp.exchanges, None)
+assert fresh.daily_trade_count == saved["daily_trade_count"], \
+    (fresh.daily_trade_count, saved["daily_trade_count"])
+assert len(fresh.trade_log) == len(saved["trade_log"]), (len(fresh.trade_log), len(saved["trade_log"]))
+print(f"13. Restart restores: daily_trades={fresh.daily_trade_count}, log={len(fresh.trade_log)}")
+
+# Daily-trades cap must NOT be consumed by exits (only opens count)
+buy_sig = {"bot_id": "t", "secret": SECRET, "signal": "buy",
+           "symbol": "BTC/USDT", "price": 60000, "sl": 59000, "tp": 62000}
+exit_sig = {"bot_id": "t", "secret": SECRET, "signal": "exit", "symbol": "BTC/USDT"}
+n0 = fresh.daily_trade_count
+r = fresh.process(exit_sig)
+assert r["status"] == "no_position", r
+r = fresh.process(buy_sig)
+assert r["status"] == "dry_run", r
+assert fresh.daily_trade_count == n0 + 1, (n0, fresh.daily_trade_count)
+print(f"14. Exit doesn't consume daily-trade cap (n0={n0}, after_both={fresh.daily_trade_count})")
 
 print("\n=== ALL EXECUTOR TESTS PASSED ===")
