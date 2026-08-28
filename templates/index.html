@@ -388,7 +388,7 @@ header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
   <div class="conn"><span class="conn-dot" id="cDot"></span><span id="cText">Connecting...</span></div>
   <div class="hdr-sep"></div>
   <div class="hdr-controls">
-    <button class="btn start" id="btnRun" onclick="api('/api/start','POST')">START</button>
+    <button class="btn start" id="btnRun" onclick="toggleRun()">START</button>
     <button class="btn paper" id="btnPaper" onclick="api('/api/toggle-paper','POST')">PAPER</button>
     <button class="btn ai-on" id="btnAI" onclick="api('/api/toggle-ai','POST')">AI</button>
     <button class="btn auto" id="btnAuto" onclick="api('/api/toggle-auto','POST')">AUTO</button>
@@ -546,8 +546,8 @@ header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
       <div class="exec" style="border-color:var(--purple);background:rgba(124,58,237,.04)">
         <div class="exec-title" style="color:var(--purple)">&#9733; Trial Trade</div>
         <div class="exec-row">
-          <button class="exec-btn buy" onclick="trialTrade('buy')" style="border-color:var(--green);background:rgba(34,232,122,.08)">TRIAL BUY</button>
-          <button class="exec-btn sell" onclick="trialTrade('sell')" style="border-color:var(--red);background:rgba(255,77,90,.08)">TRIAL SELL</button>
+          <button id="trialBuy" class="exec-btn buy" onclick="trialTrade('buy')" style="border-color:var(--green);background:rgba(34,232,122,.08)">TRIAL BUY</button>
+          <button id="trialSell" class="exec-btn sell" onclick="trialTrade('sell')" style="border-color:var(--red);background:rgba(255,77,90,.08)">TRIAL SELL</button>
         </div>
         <div style="font-size:10px;color:var(--text2);text-align:center;margin-top:4px;font-weight:600">Virtual $100K balance — no real money</div>
       </div>

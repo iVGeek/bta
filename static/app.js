@@ -160,13 +160,17 @@ function initTFs() {
   }));
 }
 
+function switchTab(rp) {
+  document.querySelectorAll(".rtab").forEach(x => x.classList.remove("on"));
+  document.querySelectorAll(".rp").forEach(x => x.classList.remove("on"));
+  const tab = document.querySelector(`.rtab[data-rp="${rp}"]`);
+  if (tab) tab.classList.add("on");
+  const panel = document.getElementById("rp-" + rp);
+  if (panel) panel.classList.add("on");
+}
+
 function initTabs() {
-  document.querySelectorAll(".rtab").forEach(t => t.addEventListener("click", () => {
-    document.querySelectorAll(".rtab").forEach(x => x.classList.remove("on"));
-    document.querySelectorAll(".rp").forEach(x => x.classList.remove("on"));
-    t.classList.add("on");
-    document.getElementById("rp-" + t.dataset.rp).classList.add("on");
-  }));
+  document.querySelectorAll(".rtab").forEach(t => t.addEventListener("click", () => switchTab(t.dataset.rp)));
 }
 
 // ── Sparkline Renderer ───────────────────────────────────────────────────────
@@ -217,11 +221,13 @@ function connectWS() {
 function onWS(d) {
   if (d.tickers) {
     for (const [sym, t] of Object.entries(d.tickers)) {
-      if (!priceHistory[sym]) priceHistory[sym] = [];
       if (tickers[sym]) {
         tickers[sym].price = t.price;
         tickers[sym].change_24h = t.change_24h;
+      } else {
+        tickers[sym] = { symbol: sym, price: t.price, change_24h: t.change_24h, asset: t.asset };
       }
+      if (!priceHistory[sym]) priceHistory[sym] = [];
       priceHistory[sym].push(t.price);
       if (priceHistory[sym].length > 20) priceHistory[sym].shift();
     }
@@ -542,6 +548,10 @@ async function executeTrade(side) {
 
 // ── Controls ─────────────────────────────────────────────────────────────────
 async function api(url, method = "POST") { try { await fetch(url, { method }); } catch (e) { console.warn("API:", e.message); } }
+async function toggleRun() {
+  const running = document.getElementById("btnRun").className.includes("stop");
+  await api(running ? "/api/stop" : "/api/start", "POST");
+}
 function openModal() { document.getElementById("modalBg").classList.add("show"); }
 function closeModal() { document.getElementById("modalBg").classList.remove("show"); }
 
@@ -727,14 +737,13 @@ async function toggleTrial() {
     if (confirm("Reset trial mode? All positions and history will be cleared.")) {
       await api("/api/trial/reset", "POST");
       trialActive = false;
-      document.getElementById("btnTrial").classList.remove("on");
-      document.getElementById("trialStat").style.display = "none";
+      loadTrialStatus();
     }
   } else {
     await api("/api/trial/start", "POST");
     trialActive = true;
-    document.getElementById("btnTrial").classList.add("on");
-    document.getElementById("trialStat").style.display = "flex";
+    switchTab("trade");
+    loadTrialStatus();
   }
 }
 

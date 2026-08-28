@@ -14,6 +14,7 @@ import urllib.error
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 
 import ccxt
 import uvicorn
@@ -1205,6 +1206,8 @@ class PaperEngine:
 paper = PaperEngine()
 ticker_cache, ticker_cache_time = {}, 0
 candle_cache = {}  # symbol -> latest candle for real-time updates
+candle_fetch_time = 0  # last candle fetch timestamp (10s TTL guard)
+_fetch_lock = threading.Lock()  # prevents concurrent slow ticker fetches
 
 
 # ── Trial / Demo Mode ─────────────────────────────────────────────────────────
@@ -1330,8 +1333,10 @@ trial = TrialEngine()
 def fetch_tickers():
     global ticker_cache, ticker_cache_time
     now = time.time()
-    if now - ticker_cache_time < 5 and ticker_cache:
+    if now - ticker_cache_time < 15 and ticker_cache:
         return ticker_cache
+    if not _fetch_lock.acquire(blocking=False):
+        return ticker_cache or {}
     try:
         ex = get_exchange()
         crypto_syms = [s for s in paper.selected_pairs + paper.watchlist_top if "/" in s]
@@ -1407,6 +1412,8 @@ def fetch_tickers():
     except Exception as e:
         print(f"Tickers: {e}")
         return ticker_cache or {}
+    finally:
+        _fetch_lock.release()
 
 
 def fetch_ohlcv(symbol, tf="15m", limit=250):
@@ -1426,6 +1433,10 @@ def fetch_ohlcv(symbol, tf="15m", limit=250):
 
 
 def fetch_latest_candle(symbol, tf="15m"):
+    global candle_fetch_time
+    now = time.time()
+    if now - candle_fetch_time < 10 and candle_cache.get(symbol):
+        return candle_cache.get(symbol)
     try:
         ex = get_exchange()
         raw = ex.fetch_ohlcv(symbol + ":USDT", tf, limit=50)
@@ -1441,6 +1452,7 @@ def fetch_latest_candle(symbol, tf="15m"):
                 candle["atr"] = round(atr(highs, lows, closes, 14)[-1], 2)
                 candle["vwap"] = round(vwap(highs, lows, closes, volumes)[-1], 2)
             candle_cache[symbol] = candle
+            candle_fetch_time = now
             return candle
     except Exception:
         pass
@@ -1679,6 +1691,7 @@ async def api_trailing_update(cfg: dict = Body(...)):
         trailing_manager.trail_distance = float(cfg["trail_distance"])
     if "enabled" in cfg:
         trailing_manager.trailing_enabled = bool(cfg["enabled"])
+    _refresh_live_state()
     return {"status": "updated"}
 
 @app.get("/api/hints")
@@ -1786,26 +1799,31 @@ async def ai_analyze(symbol: str, side: str):
 @app.post("/api/start")
 async def api_start():
     paper.running = True
+    _refresh_live_state()
     return {"status": "started"}
 
 @app.post("/api/stop")
 async def api_stop():
     paper.running = False
+    _refresh_live_state()
     return {"status": "stopped"}
 
 @app.post("/api/toggle-paper")
 async def api_toggle_paper():
     paper.paper_mode = not paper.paper_mode
+    _refresh_live_state()
     return {"paper_mode": paper.paper_mode}
 
 @app.post("/api/toggle-ai")
 async def api_toggle_ai():
     paper.ai_enabled = not paper.ai_enabled
+    _refresh_live_state()
     return {"ai_enabled": paper.ai_enabled}
 
 @app.post("/api/toggle-auto")
 async def api_toggle_auto():
     paper.auto_trade = not paper.auto_trade
+    _refresh_live_state()
     return {"auto_trade": paper.auto_trade}
 
 @app.get("/api/trial/status")
@@ -1824,11 +1842,13 @@ async def api_trial_status():
 @app.post("/api/trial/start")
 async def api_trial_start():
     trial.start()
+    _refresh_live_state()
     return {"status": "started", "balance": trial.balance}
 
 @app.post("/api/trial/reset")
 async def api_trial_reset():
     trial.reset()
+    _refresh_live_state()
     return {"status": "reset", "balance": trial.balance}
 
 @app.post("/api/trial/trade")
@@ -1876,6 +1896,7 @@ async def api_trial_trade(order: dict = Body(...)):
         "time": datetime.now(timezone.utc).isoformat(),
     })
 
+    _refresh_live_state()
     return {"status": "opened", "position": pos, "ai": ai_decision}
 
 @app.post("/api/trial/close/{position_id}")
@@ -1883,12 +1904,15 @@ async def api_trial_close(position_id: int):
     for pos in trial.positions:
         if pos["id"] == position_id:
             trade = trial.close_position(pos, "manual")
+            _refresh_live_state()
             return {"status": "closed", "trade": trade}
+    _refresh_live_state()
     return {"status": "not_found"}
 
 @app.post("/api/trial/asset-filter")
 async def api_trial_asset_filter(data: dict = Body(...)):
     trial.asset_type = data.get("asset_type", "all")
+    _refresh_live_state()
     return {"asset_type": trial.asset_type}
 
 @app.post("/api/settings")
@@ -1899,6 +1923,7 @@ async def api_settings(s: dict = Body(...)):
         if key in s: setattr(paper, key, int(s[key]))
     if "selected_pairs" in s: paper.selected_pairs = s["selected_pairs"]
     if "timeframe" in s: paper.timeframe = s["timeframe"]
+    _refresh_live_state()
     return {"status": "updated"}
 
 @app.post("/api/trade")
@@ -1937,8 +1962,10 @@ async def api_trade(order: dict = Body(...)):
 
     pos, err = paper.open_position(symbol, pos_side, price, atr_val, ai_decision.get("score", 0))
     if err:
+        _refresh_live_state()
         return {"status": "error", "error": err, "ai": ai_decision}
 
+    _refresh_live_state()
     return {"status": "position_opened", "position": pos.to_dict(), "ai": ai_decision}
 
 @app.post("/api/close/{position_id}")
@@ -1946,63 +1973,249 @@ async def api_close(position_id: int):
     for pos in paper.positions:
         if pos.id == position_id:
             trade = paper.close_position(pos, "manual")
+            _refresh_live_state()
             return {"status": "closed", "trade": trade, "pnl": trade["pnl"], "symbol": trade["symbol"], "side": trade["side"]}
+    _refresh_live_state()
     return {"status": "not_found"}
+
+
+# ── Live State & Background Update Loop ───────────────────────────────────────
+
+live_state = {"type": "update", "boot": True}
+last_candle_global = None  # last known candle, reused for quick post-mutation live_state rebuilds
+mtf_cache = {}  # symbol -> {"time": ts, "result": {...}}
+
+def _refresh_live_state():
+    """Immediately rebuild live_state (no network IO) after a state mutation, so
+    WebSocket clients see new state on the next 1.5s push instead of up to ~2-3s later."""
+    global live_state
+    try:
+        live_state = _build_live_state(ticker_cache, last_candle_global)
+    except Exception as e:
+        print(f"Live state refresh error: {e}")
+
+def get_mtf_cached(sym, ttl=300):
+    now = time.time()
+    cached = mtf_cache.get(sym)
+    if cached and now - cached["time"] < ttl:
+        return cached["result"]
+    try:
+        result = multi_tf_analysis(sym)
+        mtf_cache[sym] = {"time": now, "result": result}
+        return result
+    except Exception:
+        return mtf_cache.get(sym, {}).get("result", {}) if cached else {"confluence": "neutral", "total_timeframes": 0}
+
+def append_signal(sig_dict):
+    paper.signals.append(sig_dict)
+
+def auto_trade_scan():
+    """Scan selected pairs for setups and auto-open positions when running + auto_trade enabled."""
+    if not paper.running or not paper.auto_trade:
+        return
+    ok, reason = risk_manager.can_trade(paper)
+    if not ok:
+        return
+    if len(paper.positions) >= paper.max_positions:
+        return
+    tf = paper.timeframe if not paper.timeframe.isdigit() else paper.timeframe + "m"
+    for sym in list(paper.selected_pairs):
+        if any(p.symbol == sym for p in paper.positions):
+            continue
+        # compute indicators if not cached (or stale)
+        ind = paper.indicators_cache.get(sym)
+        needs_refresh = not ind
+        if not needs_refresh and paper.last_update and time.time() - (paper.last_update or time.time()) > 300:
+            needs_refresh = True
+        if needs_refresh:
+            ohlcv = fetch_ohlcv(sym, tf, 250)
+            if not ohlcv or len(ohlcv) < 50:
+                continue
+            ind = compute_indicators(ohlcv)
+            if not ind:
+                continue
+            paper.indicators_cache[sym] = ind
+
+        ticker = ticker_cache.get(sym, {})
+        price = ticker.get("price", 0)
+        if not price:
+            continue
+
+        sigs = ind.get("signals", {"long": 0, "short": 0})
+        long_n = sigs.get("long", 0); short_n = sigs.get("short", 0)
+        if long_n == short_n:
+            continue
+        side = "long" if long_n > short_n else "short"
+
+        # multi-timeframe confluence (crypto only, cached 5 min)
+        if "/" in sym:
+            try:
+                mtf = get_mtf_cached(sym)
+                if mtf.get("total_timeframes", 0) >= 3:
+                    conf = mtf.get("confluence", "neutral")
+                    if side == "long" and conf not in ("bullish", "neutral"):
+                        continue
+                    if side == "short" and conf not in ("bearish", "neutral"):
+                        continue
+            except Exception:
+                pass
+
+        ai_dec = ai.analyze_signal(sym, side, ind, ticker_cache)
+        if not ai_dec.get("approved", False):
+            continue
+        score = ai_dec.get("score", 0)
+        if score < 60:
+            continue
+
+        atr_val = ind.get("atr", price * 0.01)
+        pos, err = paper.open_position(sym, side, price, atr_val, score)
+        if err:
+            continue
+        signal = {
+            "type": "auto", "symbol": sym, "side": "buy" if side == "long" else "sell",
+            "price": price, "time": datetime.now(timezone.utc).isoformat(),
+            "confidence": ai_dec.get("confidence", score),
+            "ai_approved": True, "ai_score": score,
+            "ai_reasons": ai_dec.get("reasons", []),
+        }
+        paper.signals.append(signal)
+        print(f"[AUTO] Opened {side} {sym} @ {price} (score {score})")
+
+
+def _build_live_state(tickers, latest_candle):
+    """Assemble the full dashboard payload from current engine state."""
+    metrics = paper.get_metrics()
+    risk = risk_manager.get_status(paper.equity if paper else None)
+    closed_trial_ids = [p.get("id") for p in getattr(trial, "positions", [])]
+    return {
+        "type": "update",
+        "balance": round(paper.balance, 2), "equity": round(paper.equity, 2),
+        "daily_pnl": round(paper.balance - paper.initial_balance, 2),
+        "positions": [p.to_dict() for p in paper.positions],
+        "trades": list(paper.trades)[-30:],
+        "signals": list(paper.signals)[-20:],
+        "metrics": metrics,
+        "running": paper.running, "paper_mode": paper.paper_mode,
+        "ai_enabled": paper.ai_enabled, "auto_trade": paper.auto_trade,
+        "risk_per_trade": paper.risk_per_trade,
+        "sl_atr_mult": paper.sl_atr_mult, "tp_atr_mult": paper.tp_atr_mult,
+        "score_threshold": paper.score_threshold,
+        "max_positions": paper.max_positions, "positions_count": len(paper.positions),
+        "market": ai.market_analysis(tickers, paper.indicators_cache),
+        "ai_decisions": list(ai.decisions)[-10:],
+        "risk": risk,
+        "tickers": {sym: {"price": t.get("price", 0), "change_24h": t.get("change_24h", 0),
+                          "asset": t.get("asset", "crypto")} for sym, t in tickers.items()},
+        "candle": latest_candle,
+        "trial": {
+            "active": trial.active, "balance": round(trial.balance, 2),
+            "equity": round(trial.equity, 2),
+            "pnl": round(trial.equity - trial.initial_balance, 2),
+            "positions": trial.positions,
+            "closed_ids_snapshot": closed_trial_ids,
+        },
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def update_loop():
+    """Background task: keeps live_state fresh so WebSocket + status are instant."""
+    global live_state, ticker_cache, last_candle_global
+    while True:
+        try:
+            tickers = ticker_cache
+            closed = paper.update_positions(tickers)
+            for t in closed:
+                side = "sell" if t.get("side") == "buy" else "buy"
+                paper.signals.append({
+                    "type": "auto_close", "symbol": t["symbol"], "side": side,
+                    "price": t.get("exit", 0), "time": t.get("close_time", ""),
+                    "confidence": 100, "ai_approved": True,
+                    "ai_score": t.get("ai_score", 0),
+                    "ai_reasons": [f"Auto-closed: {t.get('reason', 'unknown')}"],
+                })
+            trial.update_positions(tickers)
+
+            # auto-trade when enabled (runs in the same thread as fetch to avoid extra ohclv calls)
+            if paper.running and paper.auto_trade:
+                await asyncio.to_thread(auto_trade_scan)
+
+            latest_candle = await asyncio.to_thread(
+                fetch_latest_candle,
+                paper.selected_pairs[0] if paper.selected_pairs else "BTC/USDT",
+                paper.timeframe if not paper.timeframe.isdigit() else paper.timeframe + "m",
+            )
+            if latest_candle:
+                last_candle_global = latest_candle
+            live_state = _build_live_state(tickers, latest_candle)
+        except Exception as e:
+            print(f"Update loop error: {e}")
+        await asyncio.sleep(2)
 
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
+    seen_closed = set(live_state.get("trial", {}).get("closed_ids_snapshot", []))
     try:
         while True:
-            tickers = await asyncio.to_thread(fetch_tickers)
-            closed = paper.update_positions(tickers)
-            for t in closed:
-                orig_side = t.get("side", "")
-                close_side = "sell" if orig_side == "buy" else "buy"
-                paper.signals.append({
-                    "type": "auto_close", "symbol": t["symbol"],
-                    "side": close_side,
-                    "price": t.get("exit", 0),
-                    "time": t.get("close_time", ""),
-                    "confidence": 100, "ai_approved": True,
-                    "ai_score": t.get("ai_score", 0),
-                    "ai_reasons": [f"Auto-closed: {t.get('reason', 'unknown')}"],
-                })
-
-            # Update trial positions too
-            trial_closed = trial.update_positions(tickers)
-
-            metrics = paper.get_metrics()
-            market = ai.market_analysis(tickers, paper.indicators_cache)
-
-            latest_candle = await asyncio.to_thread(fetch_latest_candle, paper.selected_pairs[0] if paper.selected_pairs else "BTC/USDT", paper.timeframe if not paper.timeframe.isdigit() else paper.timeframe + "m")
-
-            await ws.send_json({
-                "type": "update",
-                "balance": round(paper.balance, 2), "equity": round(paper.equity, 2),
-                "daily_pnl": round(paper.equity - paper.balance, 2),
-                "positions": [p.to_dict() for p in paper.positions],
-                "trades": list(paper.trades)[-30:],
-                "signals": list(paper.signals)[-20:],
-                "metrics": metrics,
-                "running": paper.running, "paper_mode": paper.paper_mode,
-                "ai_enabled": paper.ai_enabled, "auto_trade": paper.auto_trade,
-                "market": market,
-                "ai_decisions": list(ai.decisions)[-10:],
-                "tickers": {sym: {"price": t.get("price", 0), "change_24h": t.get("change_24h", 0), "asset": t.get("asset", "crypto")} for sym, t in tickers.items()},
-                "candle": latest_candle,
-                "trial": {
-                    "active": trial.active, "balance": round(trial.balance, 2),
-                    "equity": round(trial.equity, 2),
-                    "pnl": round(trial.equity - trial.initial_balance, 2),
-                    "positions": trial.positions, "closed": trial_closed,
-                },
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-            })
-            await asyncio.sleep(1)
+            msg = live_state
+            # Diff trial closed positions for this client to avoid duplicate toasts
+            trial_ids = set(x.get("id") for x in msg.get("trial", {}).get("positions", []))
+            closed_now = [t for t in closed_ids_global() if t.get("id") not in seen_closed]
+            seen_closed |= set(t.get("id") for t in closed_now)
+            out = dict(msg)
+            out["trial"] = dict(msg.get("trial", {}))
+            out["trial"]["closed"] = closed_now
+            await ws.send_json(out)
+            await asyncio.sleep(1.5)
     except WebSocketDisconnect:
         pass
+
+
+_trial_closed_seen = set()
+
+def closed_ids_global():
+    """Trial trades closed since server boot, for WS toast notifications."""
+    out = []
+    for t in trial.trades:
+        if t.get("id") not in _trial_closed_seen:
+            out.append(t)
+    _trial_closed_seen.update(t.get("id") for t in out)
+    return out
+
+async def _run_update_loop():
+    while True:
+        try:
+            await update_loop()
+        except Exception as e:
+            print(f"Update loop restart: {e}")
+            await asyncio.sleep(5)
+
+async def _refresher_loop():
+    """Slow cadence foreground-ish refresher for ticker cache, decoupled from the
+    2s live_state loop so a slow yfinance/ccxt fetch never freezes the dashboard."""
+    global ticker_cache
+    while True:
+        try:
+            await asyncio.to_thread(fetch_tickers)
+        except Exception as e:
+            print(f"Ticker refresher error: {e}")
+        await asyncio.sleep(30)
+
+async def _run_refresher():
+    while True:
+        try:
+            await _refresher_loop()
+        except Exception as e:
+            print(f"Refresher restart: {e}")
+            await asyncio.sleep(10)
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(_run_update_loop())
+    asyncio.create_task(_run_refresher())
+    print("[startup] Background update + ticker-refresh loops started")
 
 
 if __name__ == "__main__":
