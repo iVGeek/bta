@@ -1667,7 +1667,10 @@ async def api_status():
     return {
         "running": paper.running, "paper_mode": paper.paper_mode,
         "balance": round(paper.balance, 2), "equity": round(paper.equity, 2),
-        "daily_pnl": round(paper.equity - paper.balance, 2),
+        "unrealized_pnl": round(paper.equity - paper.balance, 2),
+        "total_pnl": round(paper.equity - paper.initial_balance, 2),
+        "daily_pnl": round(risk_manager.daily_pnl, 2),
+        "daily_trades": risk_manager.daily_trades,
         "positions_count": len(paper.positions), "max_positions": paper.max_positions,
         "risk_per_trade": paper.risk_per_trade,
         "selected_pairs": paper.selected_pairs, "timeframe": paper.timeframe,
@@ -2097,6 +2100,7 @@ async def api_close(position_id: int):
     for pos in paper.positions:
         if pos.id == position_id:
             trade = paper.close_position(pos, "manual")
+            risk_manager.record_trade(trade["pnl"])
             _refresh_live_state()
             save_state()
             return {"status": "closed", "trade": trade, "pnl": trade["pnl"], "symbol": trade["symbol"], "side": trade["side"]}
@@ -2239,7 +2243,10 @@ def _build_live_state(tickers, latest_candle):
     return {
         "type": "update",
         "balance": round(paper.balance, 2), "equity": round(paper.equity, 2),
-        "daily_pnl": round(paper.balance - paper.initial_balance, 2),
+        "unrealized_pnl": round(paper.equity - paper.balance, 2),
+        "total_pnl": round(paper.equity - paper.initial_balance, 2),
+        "daily_pnl": round(risk_manager.daily_pnl, 2),
+        "daily_trades": risk_manager.daily_trades,
         "positions": [p.to_dict() for p in paper.positions],
         "trades": list(paper.trades)[-30:],
         "signals": list(paper.signals)[-20:],
