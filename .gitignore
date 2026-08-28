@@ -10,3 +10,4 @@ node_modules/
 *.swp
 *.swo
 data/
+bot_state.json

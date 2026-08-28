@@ -1296,6 +1296,134 @@ class TrialEngine:
 trial = TrialEngine()
 
 
+# ── State Persistence ──────────────────────────────────────────────────────────
+
+STATE_FILE = BASE_DIR / "bot_state.json"
+_state_lock = threading.Lock()
+_last_save = 0.0
+
+
+def _restore_position(d):
+    pos = PaperPosition(d["symbol"], d["side"], d.get("entry", 0), d.get("amount", 0),
+                        d.get("sl", 0), d.get("tp", 0), d.get("ai_score", 0))
+    for k in ["id", "current", "pnl", "pnl_pct", "rr", "trailing_sl", "breakeven_hit",
+              "partial_closed", "highest_pnl", "lowest_pnl", "open_time", "status", "atr_at_entry"]:
+        if k in d:
+            setattr(pos, k, d[k])
+    return pos
+
+
+def _serialize_state():
+    return {
+        "version": 2,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "paper": {
+            "balance": paper.balance, "initial_balance": paper.initial_balance,
+            "running": paper.running, "paper_mode": paper.paper_mode,
+            "ai_enabled": paper.ai_enabled, "auto_trade": paper.auto_trade,
+            "selected_pairs": paper.selected_pairs, "watchlist_top": paper.watchlist_top,
+            "timeframe": paper.timeframe, "risk_per_trade": paper.risk_per_trade,
+            "max_positions": paper.max_positions, "sl_atr_mult": paper.sl_atr_mult,
+            "tp_atr_mult": paper.tp_atr_mult, "score_threshold": paper.score_threshold,
+            "positions": [p.to_dict() for p in paper.positions],
+            "trades": list(paper.trades), "signals": list(paper.signals),
+            "equity_curve": paper.equity_curve,
+        },
+        "trial": {
+            "active": trial.active, "balance": trial.balance, "initial_balance": trial.initial_balance,
+            "positions": trial.positions, "trades": trial.trades,
+            "signals": list(trial.signals), "equity_curve": trial.equity_curve,
+            "start_time": trial.start_time, "asset_type": trial.asset_type,
+        },
+        "risk": {
+            "daily_pnl": risk_manager.daily_pnl, "daily_trades": risk_manager.daily_trades,
+            "peak_equity": risk_manager.peak_equity, "last_reset": risk_manager.last_reset.isoformat(),
+        },
+        "trailing": {
+            "enabled": trailing_manager.trailing_enabled,
+            "breakeven_trigger": trailing_manager.breakeven_trigger,
+            "trail_distance": trailing_manager.trail_distance,
+        },
+    }
+
+
+def save_state():
+    """Persist engine state atomically (temp file + rename). Safe to call frequently."""
+    global _last_save
+    if STATE_FILE is None:
+        return
+    with _state_lock:
+        try:
+            tmp = STATE_FILE.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(_serialize_state(), indent=2))
+            os.replace(tmp, STATE_FILE)
+            _last_save = time.time()
+        except Exception as e:
+            print(f"Save state error: {e}")
+
+
+def load_state():
+    if not STATE_FILE.exists():
+        return
+    try:
+        data = json.loads(STATE_FILE.read_text())
+    except Exception as e:
+        print(f"Load state error: {e}")
+        return
+    try:
+        p = data.get("paper", {})
+        paper.balance = float(p.get("balance", paper.balance))
+        paper.initial_balance = float(p.get("initial_balance", paper.initial_balance))
+        paper.running = bool(p.get("running", False))
+        paper.paper_mode = bool(p.get("paper_mode", True))
+        paper.ai_enabled = bool(p.get("ai_enabled", True))
+        paper.auto_trade = bool(p.get("auto_trade", True))
+        paper.selected_pairs = p.get("selected_pairs", paper.selected_pairs)
+        paper.watchlist_top = p.get("watchlist_top", paper.watchlist_top)
+        paper.timeframe = p.get("timeframe", paper.timeframe)
+        paper.risk_per_trade = float(p.get("risk_per_trade", 1.0))
+        paper.max_positions = int(p.get("max_positions", 5))
+        paper.sl_atr_mult = float(p.get("sl_atr_mult", 1.0))
+        paper.tp_atr_mult = float(p.get("tp_atr_mult", 2.0))
+        paper.score_threshold = int(p.get("score_threshold", 5))
+        paper.positions = [_restore_position(d) for d in p.get("positions", [])]
+        paper.trades.extend(p.get("trades", []))
+        paper.signals.extend(p.get("signals", []))
+        paper.equity_curve = p.get("equity_curve") or paper.equity_curve
+
+        t = data.get("trial", {})
+        trial.active = bool(t.get("active", False))
+        trial.balance = float(t.get("balance", trial.balance))
+        trial.initial_balance = float(t.get("initial_balance", trial.initial_balance))
+        trial.positions = t.get("positions", [])
+        trial.trades = t.get("trades", [])
+        trial.signals.extend(t.get("signals", []))
+        trial.equity_curve = t.get("equity_curve") or trial.equity_curve
+        trial.start_time = t.get("start_time")
+        trial.asset_type = t.get("asset_type", "all")
+
+        r = data.get("risk", {})
+        risk_manager.daily_pnl = float(r.get("daily_pnl", risk_manager.daily_pnl))
+        risk_manager.daily_trades = int(r.get("daily_trades", risk_manager.daily_trades))
+        risk_manager.peak_equity = float(r.get("peak_equity", risk_manager.peak_equity))
+        lr = r.get("last_reset")
+        if lr:
+            try:
+                risk_manager.last_reset = datetime.fromisoformat(lr).date()
+            except Exception:
+                pass
+
+        tr = data.get("trailing", {})
+        trailing_manager.trailing_enabled = bool(tr.get("enabled", True))
+        trailing_manager.breakeven_trigger = float(tr.get("breakeven_trigger", 1.0))
+        trailing_manager.trail_distance = float(tr.get("trail_distance", 1.5))
+
+        print(f"[state] Loaded: {len(paper.positions)} positions, {len(paper.trades)} paper trades, "
+              f"balance {paper.balance:.2f}, running={paper.running}, trial_active={trial.active}")
+    except Exception as e:
+        print(f"Load state apply error: {e}")
+
+
 # ── Data Fetching ─────────────────────────────────────────────────────────────
 
 def fetch_tickers():
@@ -1668,6 +1796,7 @@ async def api_trailing_update(cfg: dict = Body(...)):
     if "enabled" in cfg:
         trailing_manager.trailing_enabled = bool(cfg["enabled"])
     _refresh_live_state()
+    save_state()
     return {"status": "updated"}
 
 @app.get("/api/hints")
@@ -1778,30 +1907,35 @@ async def ai_analyze(symbol: str, side: str):
 async def api_start():
     paper.running = True
     _refresh_live_state()
+    save_state()
     return {"status": "started"}
 
 @app.post("/api/stop")
 async def api_stop():
     paper.running = False
     _refresh_live_state()
+    save_state()
     return {"status": "stopped"}
 
 @app.post("/api/toggle-paper")
 async def api_toggle_paper():
     paper.paper_mode = not paper.paper_mode
     _refresh_live_state()
+    save_state()
     return {"paper_mode": paper.paper_mode}
 
 @app.post("/api/toggle-ai")
 async def api_toggle_ai():
     paper.ai_enabled = not paper.ai_enabled
     _refresh_live_state()
+    save_state()
     return {"ai_enabled": paper.ai_enabled}
 
 @app.post("/api/toggle-auto")
 async def api_toggle_auto():
     paper.auto_trade = not paper.auto_trade
     _refresh_live_state()
+    save_state()
     return {"auto_trade": paper.auto_trade}
 
 @app.get("/api/trial/status")
@@ -1821,12 +1955,14 @@ async def api_trial_status():
 async def api_trial_start():
     trial.start()
     _refresh_live_state()
+    save_state()
     return {"status": "started", "balance": trial.balance}
 
 @app.post("/api/trial/reset")
 async def api_trial_reset():
     trial.reset()
     _refresh_live_state()
+    save_state()
     return {"status": "reset", "balance": trial.balance}
 
 @app.post("/api/trial/trade")
@@ -1877,6 +2013,7 @@ async def api_trial_trade(order: dict = Body(...)):
     })
 
     _refresh_live_state()
+    save_state()
     return {"status": "opened", "position": pos, "ai": ai_decision}
 
 @app.post("/api/trial/close/{position_id}")
@@ -1885,14 +2022,17 @@ async def api_trial_close(position_id: int):
         if pos["id"] == position_id:
             trade = trial.close_position(pos, "manual")
             _refresh_live_state()
+            save_state()
             return {"status": "closed", "trade": trade}
     _refresh_live_state()
+    save_state()
     return {"status": "not_found"}
 
 @app.post("/api/trial/asset-filter")
 async def api_trial_asset_filter(data: dict = Body(...)):
     trial.asset_type = data.get("asset_type", "all")
     _refresh_live_state()
+    save_state()
     return {"asset_type": trial.asset_type}
 
 @app.post("/api/settings")
@@ -1904,6 +2044,7 @@ async def api_settings(s: dict = Body(...)):
     if "selected_pairs" in s: paper.selected_pairs = s["selected_pairs"]
     if "timeframe" in s: paper.timeframe = s["timeframe"]
     _refresh_live_state()
+    save_state()
     return {"status": "updated"}
 
 @app.post("/api/trade")
@@ -1948,6 +2089,7 @@ async def api_trade(order: dict = Body(...)):
         return {"status": "error", "error": err, "ai": ai_decision}
 
     _refresh_live_state()
+    save_state()
     return {"status": "position_opened", "position": pos.to_dict(), "ai": ai_decision}
 
 @app.post("/api/close/{position_id}")
@@ -1956,8 +2098,10 @@ async def api_close(position_id: int):
         if pos.id == position_id:
             trade = paper.close_position(pos, "manual")
             _refresh_live_state()
+            save_state()
             return {"status": "closed", "trade": trade, "pnl": trade["pnl"], "symbol": trade["symbol"], "side": trade["side"]}
     _refresh_live_state()
+    save_state()
     return {"status": "not_found"}
 
 
@@ -2062,6 +2206,7 @@ def _auto_trade_scan_body():
             continue
 
         atr_val = ind.get("atr", price * 0.01)
+        opened = False
         with _positions_lock:
             if len(paper.positions) >= paper.max_positions:
                 break
@@ -2079,7 +2224,10 @@ def _auto_trade_scan_body():
             }
             paper.signals.append(signal)
             AUTO_STATS["opens"] += 1
-        print(f"[AUTO] Opened {side} {sym} @ {price} (score {score})")
+            opened = True
+        if opened:
+            print(f"[AUTO] Opened {side} {sym} @ {price} (score {score})")
+            save_state()
 
 
 def _build_live_state(tickers, latest_candle):
@@ -2124,6 +2272,7 @@ async def update_loop():
     while True:
         try:
             tickers = ticker_cache
+            closed = None
             with _positions_lock:
                 closed = paper.update_positions(tickers)
                 for t in closed:
@@ -2136,6 +2285,9 @@ async def update_loop():
                         "ai_reasons": [f"Auto-closed: {t.get('reason', 'unknown')}"],
                     })
                 trial.update_positions(tickers)
+
+            if closed:
+                save_state()
 
             latest_candle = await asyncio.to_thread(
                 fetch_latest_candle,
@@ -2234,6 +2386,7 @@ async def _run_auto_trade():
 
 @app.on_event("startup")
 async def startup():
+    load_state()
     asyncio.create_task(_run_update_loop())
     asyncio.create_task(_run_refresher())
     asyncio.create_task(_run_auto_trade())
