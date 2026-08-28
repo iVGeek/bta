@@ -64,41 +64,6 @@ STOCK_LIST = [
     "SNOW", "PLTR", "COIN", "SQ", "ROKU", "SOFI", "MARA", "RIOT",
 ]
 
-def fetch_stock_tickers():
-    global ticker_cache, ticker_cache_time
-    now = time.time()
-    if now - ticker_cache_time < 30 and ticker_cache:
-        return ticker_cache
-    try:
-        tickers = {}
-        batch = yf.Tickers(" ".join(STOCK_LIST[:30]))
-        for sym in STOCK_LIST[:30]:
-            try:
-                info = batch.tickers[sym].fast_info
-                price = getattr(info, 'last_price', None) or getattr(info, 'previous_close', 0) or 0
-                prev = getattr(info, 'previous_close', price) or price
-                mcap = getattr(info, 'market_cap', 0) or 0
-                chg = ((price - prev) / prev * 100) if prev and price else 0
-                tickers[sym] = {
-                    "symbol": sym, "price": round(price, 2),
-                    "change_24h": round(chg, 2),
-                    "volume_24h": mcap,
-                    "high_24h": round(price * 1.01, 2),
-                    "low_24h": round(price * 0.99, 2),
-                    "bid": round(price * 0.999, 2),
-                    "ask": round(price * 1.001, 2),
-                    "spread": round(price * 0.002, 2),
-                    "asset": "stock",
-                }
-            except Exception as e:
-                print(f"Stock {sym}: {e}")
-        ticker_cache, ticker_cache_time = tickers, now
-        return tickers
-    except Exception as e:
-        print(f"Stock tickers: {e}")
-        return ticker_cache or {}
-
-
 def fetch_stock_ohlcv(symbol, tf="1d", limit=250):
     try:
         period_map = {"1m": "5d", "5m": "60d", "15m": "60d", "60m": "2y",
@@ -1085,6 +1050,7 @@ class PaperEngine:
         self.score_threshold = 5
         self.indicators_cache = {}
         self.last_update = None
+        self.indicator_tf = None
 
     @property
     def equity(self):
@@ -1208,6 +1174,8 @@ ticker_cache, ticker_cache_time = {}, 0
 candle_cache = {}  # symbol -> latest candle for real-time updates
 candle_fetch_time = 0  # last candle fetch timestamp (10s TTL guard)
 _fetch_lock = threading.Lock()  # prevents concurrent slow ticker fetches
+_positions_lock = threading.Lock()  # serializes paper/trial position mutations + auto-trade scan
+AUTO_STATS = {"last_scan": 0, "opens": 0, "last_error": "", "ind_cache": 0}
 
 
 # ── Trial / Demo Mode ─────────────────────────────────────────────────────────
@@ -1381,6 +1349,10 @@ def fetch_tickers():
                         }
                     except Exception as e:
                         print(f"Ticker {sym}: {e}")
+        # Publish crypto prices immediately so the dashboard watchlist populates
+        # before the slower yfinance stock batch completes.
+        if tickers:
+            ticker_cache.update(tickers)
         # Stock tickers
         if stock_syms:
             try:
@@ -1407,8 +1379,10 @@ def fetch_tickers():
                         print(f"Stock ticker {sym}: {e}")
             except Exception as e:
                 print(f"Stock batch: {e}")
-        ticker_cache, ticker_cache_time = tickers, now
-        return tickers
+        if tickers:
+            ticker_cache.update(tickers)
+        ticker_cache_time = now
+        return ticker_cache
     except Exception as e:
         print(f"Tickers: {e}")
         return ticker_cache or {}
@@ -1570,6 +1544,8 @@ async def api_status():
         "risk_per_trade": paper.risk_per_trade,
         "selected_pairs": paper.selected_pairs, "timeframe": paper.timeframe,
         "ai_enabled": paper.ai_enabled, "auto_trade": paper.auto_trade,
+        "indicator_refresh_ts": paper.last_update,
+        "scan_stats": dict(AUTO_STATS),
         "score_threshold": paper.score_threshold,
         "sl_atr_mult": paper.sl_atr_mult, "tp_atr_mult": paper.tp_atr_mult,
         "metrics": metrics,
@@ -1700,12 +1676,14 @@ async def api_hints():
     hints = []
     for sym in paper.selected_pairs:
         ind = paper.indicators_cache.get(sym)
-        if not ind:
+        if not ind or paper.indicator_tf != (paper.timeframe if not paper.timeframe.isdigit() else paper.timeframe + "m"):
             tf = paper.timeframe if not paper.timeframe.isdigit() else paper.timeframe + "m"
             ohlcv = await asyncio.to_thread(fetch_ohlcv, sym, tf)
             if ohlcv:
                 ind = compute_indicators(ohlcv)
                 paper.indicators_cache[sym] = ind
+                paper.last_update = time.time()
+                paper.indicator_tf = tf
         if not ind:
             continue
         price = tickers.get(sym, {}).get("price", 0)
@@ -1869,6 +1847,8 @@ async def api_trial_trade(order: dict = Body(...)):
         if ohlcv:
             ind = compute_indicators(ohlcv)
             paper.indicators_cache[symbol] = ind
+            paper.last_update = time.time()
+            paper.indicator_tf = tf
 
     # AI analysis
     tickers = await asyncio.to_thread(fetch_tickers)
@@ -1937,6 +1917,8 @@ async def api_trade(order: dict = Body(...)):
         ohlcv = await asyncio.to_thread(fetch_ohlcv, symbol, tf)
         if ohlcv:
             paper.indicators_cache[symbol] = compute_indicators(ohlcv)
+            paper.last_update = time.time()
+            paper.indicator_tf = tf
 
     pos_side = "long" if side == "buy" else "short"
     ai_side = pos_side
@@ -2016,6 +1998,16 @@ def auto_trade_scan():
     ok, reason = risk_manager.can_trade(paper)
     if not ok:
         return
+    AUTO_STATS["last_scan"] = time.time()
+    AUTO_STATS["ind_cache"] = len(paper.indicators_cache)
+    try:
+        _auto_trade_scan_body()
+    except Exception as e:
+        AUTO_STATS["last_error"] = str(e)
+        print(f"[AUTO] scan error: {e}")
+
+
+def _auto_trade_scan_body():
     if len(paper.positions) >= paper.max_positions:
         return
     tf = paper.timeframe if not paper.timeframe.isdigit() else paper.timeframe + "m"
@@ -2024,7 +2016,7 @@ def auto_trade_scan():
             continue
         # compute indicators if not cached (or stale)
         ind = paper.indicators_cache.get(sym)
-        needs_refresh = not ind
+        needs_refresh = not ind or paper.indicator_tf != tf
         if not needs_refresh and paper.last_update and time.time() - (paper.last_update or time.time()) > 300:
             needs_refresh = True
         if needs_refresh:
@@ -2035,6 +2027,8 @@ def auto_trade_scan():
             if not ind:
                 continue
             paper.indicators_cache[sym] = ind
+            paper.last_update = time.time()
+            paper.indicator_tf = tf
 
         ticker = ticker_cache.get(sym, {})
         price = ticker.get("price", 0)
@@ -2068,17 +2062,23 @@ def auto_trade_scan():
             continue
 
         atr_val = ind.get("atr", price * 0.01)
-        pos, err = paper.open_position(sym, side, price, atr_val, score)
-        if err:
-            continue
-        signal = {
-            "type": "auto", "symbol": sym, "side": "buy" if side == "long" else "sell",
-            "price": price, "time": datetime.now(timezone.utc).isoformat(),
-            "confidence": ai_dec.get("confidence", score),
-            "ai_approved": True, "ai_score": score,
-            "ai_reasons": ai_dec.get("reasons", []),
-        }
-        paper.signals.append(signal)
+        with _positions_lock:
+            if len(paper.positions) >= paper.max_positions:
+                break
+            if any(p.symbol == sym for p in paper.positions):
+                continue
+            pos, err = paper.open_position(sym, side, price, atr_val, score)
+            if err:
+                continue
+            signal = {
+                "type": "auto", "symbol": sym, "side": "buy" if side == "long" else "sell",
+                "price": price, "time": datetime.now(timezone.utc).isoformat(),
+                "confidence": ai_dec.get("confidence", score),
+                "ai_approved": True, "ai_score": score,
+                "ai_reasons": ai_dec.get("reasons", []),
+            }
+            paper.signals.append(signal)
+            AUTO_STATS["opens"] += 1
         print(f"[AUTO] Opened {side} {sym} @ {price} (score {score})")
 
 
@@ -2124,21 +2124,18 @@ async def update_loop():
     while True:
         try:
             tickers = ticker_cache
-            closed = paper.update_positions(tickers)
-            for t in closed:
-                side = "sell" if t.get("side") == "buy" else "buy"
-                paper.signals.append({
-                    "type": "auto_close", "symbol": t["symbol"], "side": side,
-                    "price": t.get("exit", 0), "time": t.get("close_time", ""),
-                    "confidence": 100, "ai_approved": True,
-                    "ai_score": t.get("ai_score", 0),
-                    "ai_reasons": [f"Auto-closed: {t.get('reason', 'unknown')}"],
-                })
-            trial.update_positions(tickers)
-
-            # auto-trade when enabled (runs in the same thread as fetch to avoid extra ohclv calls)
-            if paper.running and paper.auto_trade:
-                await asyncio.to_thread(auto_trade_scan)
+            with _positions_lock:
+                closed = paper.update_positions(tickers)
+                for t in closed:
+                    side = "sell" if t.get("side") == "buy" else "buy"
+                    paper.signals.append({
+                        "type": "auto_close", "symbol": t["symbol"], "side": side,
+                        "price": t.get("exit", 0), "time": t.get("close_time", ""),
+                        "confidence": 100, "ai_approved": True,
+                        "ai_score": t.get("ai_score", 0),
+                        "ai_reasons": [f"Auto-closed: {t.get('reason', 'unknown')}"],
+                    })
+                trial.update_positions(tickers)
 
             latest_candle = await asyncio.to_thread(
                 fetch_latest_candle,
@@ -2211,11 +2208,36 @@ async def _run_refresher():
             print(f"Refresher restart: {e}")
             await asyncio.sleep(10)
 
+def _auto_trade_scan_safe():
+    """Scan runs outside the positions lock — only individual position opens grab it,
+    so slow OHLCV/MTF fetching can never stall the 2s live_state loop."""
+    auto_trade_scan()
+
+async def _auto_trade_loop():
+    """Dedicated task for auto-trading scans — decoupled from the 2s live_state loop
+    so OHLCV/MTF network work during a scan never freezes the dashboard."""
+    while True:
+        try:
+            if paper.running and paper.auto_trade:
+                await asyncio.to_thread(_auto_trade_scan_safe)
+        except Exception as e:
+            print(f"Auto-trade error: {e}")
+        await asyncio.sleep(6)
+
+async def _run_auto_trade():
+    while True:
+        try:
+            await _auto_trade_loop()
+        except Exception as e:
+            print(f"Auto-trade restart: {e}")
+            await asyncio.sleep(10)
+
 @app.on_event("startup")
 async def startup():
     asyncio.create_task(_run_update_loop())
     asyncio.create_task(_run_refresher())
-    print("[startup] Background update + ticker-refresh loops started")
+    asyncio.create_task(_run_auto_trade())
+    print("[startup] Background update + ticker-refresh + auto-trade loops started")
 
 
 if __name__ == "__main__":
