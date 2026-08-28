@@ -2,7 +2,7 @@ import sys, os
 sys.path.insert(0, "C:/iVGeek/trading-bot/executor")
 os.chdir("C:/iVGeek/trading-bot/executor")
 from fastapi.testclient import TestClient
-from server import app, config
+from server import app, config, processor
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -67,5 +67,23 @@ print(f"8. Position size math exact ({res['amount']} BTC)")
 r = client.get("/trades")
 assert len(r.json()) >= 4, r.json()
 print("9. Trades logged:", len(r.json()))
+
+# Symbol resolution: TradingView syminfo.tickerid must map to ccxt market symbols
+sp = processor
+cases = {
+    "BINANCE:BTCUSDT": "BTC/USDT:USDT",      # Broker: prefix, compact ticker
+    "BINANCE:ETHUSDT.P": "ETH/USDT:USDT",    # delivery suffix stripped
+    "BTCUSDT": "BTC/USDT:USDT",              # bare compact ticker (futures market)
+    "BTC/USDT": "BTC/USDT:USDT",             # already slashed -> still canonical futures
+}
+for raw, want in cases.items():
+    got = sp._resolve_symbol({"symbol": raw, "price": 60000})
+    assert got == want, f"{raw} -> {got} (expected {want})"
+    print(f"10. Resolve {raw} -> {got}")
+
+# Shared exchange used throughout (binance configured with balance + fallback)
+ex = sp.exchanges.get_exchange("binance")
+assert len(ex.markets) > 1000, f"binance should have loaded futures markets, got {len(ex.markets)}"
+print("11. Binance futures markets loaded:", len(ex.markets), "instruments")
 
 print("\n=== ALL EXECUTOR TESTS PASSED ===")

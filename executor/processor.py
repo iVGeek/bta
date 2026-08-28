@@ -166,12 +166,38 @@ class SignalProcessor:
             else:
                 symbol = "BTC/USDT"
 
-        # Normalize to ccxt format
-        symbol = symbol.upper().replace("-", "/").replace("_", "/")
-        if "/" not in symbol:
-            symbol = symbol + "/USDT"
+        raw = symbol.strip().upper()
+        # Strip broker prefix from syminfo.tickerid, e.g. "BINANCE:BTCUSDT" -> "BTCUSDT"
+        if ":" in raw:
+            left, _, right = raw.partition(":")
+            if left.isalpha() and "/" not in left and right:
+                raw = right
+        raw = raw.split(".")[0]  # drop delivery suffix (.P, .M, …)
+        raw = raw.replace("_", "/")
 
-        return symbol
+        # Insert the slash when the ticker is compact: BTCUSDT -> BTC/USDT
+        if "/" not in raw:
+            for q in ("USDT", "USDC", "BUSD", "USD"):
+                if raw.endswith(q) and len(raw) > len(q):
+                    raw = raw[:-len(q)] + "/" + q
+                    break
+
+        # Resolve to the exact ccxt market the connected exchange trades
+        # (futures markets are keyed "BASE/QUOTE:QUOTE", e.g. "BTC/USDT:USDT").
+        ex = self.exchanges.get_exchange(signal.get("exchange", self.config.default_exchange))
+        if ex is not None:
+            try:
+                markets = ex.markets or {}
+                for q in ("USDT", "USDC", "BUSD", "USD"):
+                    cand = raw + ":" + q
+                    if cand in markets:
+                        return cand
+                if raw in markets:
+                    return raw
+            except Exception:
+                pass
+
+        return raw
 
     def _execute(self, signal_type: str, symbol: str, signal: dict, exchange_name: str) -> dict:
         dry_run = self.config.dry_run
