@@ -422,7 +422,7 @@ def _calc_bt_metrics(trades, final_balance, initial):
     tw = sum(t["pnl"] for t in wins)
     tl = abs(sum(t["pnl"] for t in losses))
     wr = len(wins) / len(trades) * 100
-    pf = tw / tl if tl > 0 else 0
+    pf = round(tw / tl, 2) if tl > 0 else (9999.0 if tw > 0 else 0.0)
     pnls = [t.get("pnl", 0) for t in trades]
     avg_ret = sum(pnls) / len(pnls)
     std_ret = math.sqrt(sum((p - avg_ret)**2 for p in pnls) / len(pnls)) if len(pnls) > 1 else 1
@@ -1134,7 +1134,7 @@ class PaperEngine:
         tw = sum(t["pnl"] for t in wins) if wins else 0
         tl = abs(sum(t["pnl"] for t in losses)) if losses else 0
         wr = len(wins) / len(trades) * 100
-        pf = tw / tl if tl > 0 else 0
+        pf = round(tw / tl, 2) if tl > 0 else (9999.0 if tw > 0 else 0.0)
         aw = tw / len(wins) if wins else 0
         al = tl / len(losses) if losses else 0
         exp = (wr / 100 * aw) - ((1 - wr / 100) * al)
@@ -1282,11 +1282,11 @@ class TrialEngine:
         tw = sum(t["pnl"] for t in wins) if wins else 0
         tl = abs(sum(t["pnl"] for t in losses)) if losses else 0
         wr = len(wins) / len(trades) * 100
-        pf = tw / tl if tl > 0 else 0
+        pf = round(tw / tl, 2) if tl > 0 else (9999.0 if tw > 0 else 0.0)
         all_pnls = [t.get("pnl", 0) for t in trades]
         return {
             "total_trades": len(trades), "win_rate": round(wr, 1),
-            "profit_factor": round(pf, 2),
+            "profit_factor": pf,
             "total_pnl": round(self.equity - self.initial_balance, 2),
             "total_pnl_pct": round((self.equity - self.initial_balance) / self.initial_balance * 100, 2),
             "best_trade": round(max(all_pnls), 2) if all_pnls else 0,

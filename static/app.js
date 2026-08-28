@@ -63,15 +63,15 @@ function initCharts() {
   macdChart.priceScale("right").applyOptions({ scaleMargins: { top: 0.2, bottom: 0.2 } });
 
   const ec = document.getElementById("cEquity");
-  equityChart = LightweightCharts.createChart(ec, cfg(ec.clientHeight));
+  equityChart = LightweightCharts.createChart(ec, cfg(Math.max(ec.clientHeight, 70)));
   equitySeries = equityChart.addLineSeries({ color: "#22d3a7", lineWidth: 1.5, priceLineVisible: false, lastValueVisible: true });
 
   new ResizeObserver(() => {
     chart.applyOptions({ width: mc.clientWidth, height: mc.clientHeight });
     rsiChart.applyOptions({ width: rc.clientWidth, height: rc.clientHeight });
     macdChart.applyOptions({ width: mdc.clientWidth, height: mdc.clientHeight });
-    equityChart.applyOptions({ width: ec.clientWidth, height: ec.clientHeight });
-  }).observe(mc.parentElement);
+    equityChart.applyOptions({ width: ec.clientWidth, height: Math.max(ec.clientHeight, 70) });
+  }).observe(document.querySelector(".center"));
 
   // Crosshair → candle info popup
   chart.subscribeCrosshairMove((param) => {
@@ -271,7 +271,7 @@ function onWS(d) {
   setHV("hPnl", m.total_pnl, "$" + fmtN(m.total_pnl));
   setHV("hDay", d.daily_pnl, (d.daily_pnl >= 0 ? "+" : "") + "$" + fmtN(d.daily_pnl));
   document.getElementById("hWR").textContent = m.win_rate + "%";
-  document.getElementById("hPF").textContent = m.profit_factor;
+  document.getElementById("hPF").textContent = m.profit_factor >= 9999 ? "∞" : m.profit_factor;
   setHV("hDD", m.max_drawdown, m.max_drawdown + "%");
   document.getElementById("btnRun").textContent = d.running ? "STOP" : "START";
   document.getElementById("btnRun").className = `btn ${d.running ? "stop" : "start"}`;
