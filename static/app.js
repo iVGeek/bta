@@ -5,6 +5,7 @@
 let chart, candleSeries, volSeries, ema9Line, ema21Line, ema200Line;
 let rsiChart, rsiSeries, rsiUpper, rsiLower;
 let macdChart, macdSeries, macdSigSeries, macdHistSeries;
+let equityChart, equitySeries, lastEquityT = 0;
 let ws, curSym = "BTC/USDT", curTF = "15";
 let tickers = {}, indCache = {}, priceHistory = {};
 let lastCandleTime = 0;
@@ -16,7 +17,7 @@ let trialActive = false;  // stored candle array for click lookup
 document.addEventListener("DOMContentLoaded", () => {
   initCharts(); initTabs(); initTFs(); connectWS();
   loadChart(); loadTickers(); loadOrderBook(); loadAIAnalysis(); loadNews(); loadHints();
-  loadTrialStatus();
+  loadTrialStatus(); loadEquity();
   setInterval(loadOrderBook, 5000);
   setInterval(loadAIAnalysis, 15000);
   setInterval(loadNews, 120000);
@@ -61,10 +62,15 @@ function initCharts() {
   macdSigSeries = macdChart.addLineSeries({ color: "#fbbf24", lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
   macdChart.priceScale("right").applyOptions({ scaleMargins: { top: 0.2, bottom: 0.2 } });
 
+  const ec = document.getElementById("cEquity");
+  equityChart = LightweightCharts.createChart(ec, cfg(ec.clientHeight));
+  equitySeries = equityChart.addLineSeries({ color: "#22d3a7", lineWidth: 1.5, priceLineVisible: false, lastValueVisible: true });
+
   new ResizeObserver(() => {
     chart.applyOptions({ width: mc.clientWidth, height: mc.clientHeight });
     rsiChart.applyOptions({ width: rc.clientWidth, height: rc.clientHeight });
     macdChart.applyOptions({ width: mdc.clientWidth, height: mdc.clientHeight });
+    equityChart.applyOptions({ width: ec.clientWidth, height: ec.clientHeight });
   }).observe(mc.parentElement);
 
   // Crosshair → candle info popup
@@ -87,6 +93,18 @@ function initCharts() {
     chgEl.textContent = (chg >= 0 ? "+" : "") + chg + "%";
     chgEl.style.color = chg >= 0 ? "var(--green)" : "var(--red)";
   });
+}
+
+async function loadEquity() {
+  try {
+    const r = await fetch("/api/equity");
+    const pts = await r.json();
+    if (pts?.length) {
+      equitySeries.setData(pts.map(p => ({ time: p.time, value: p.value })));
+      lastEquityT = pts[pts.length - 1].time;
+      equityChart.timeScale().fitContent();
+    }
+  } catch (_) {}
 }
 
 async function loadChart() {
@@ -246,7 +264,12 @@ function onWS(d) {
   const m = d.metrics || {};
   document.getElementById("hBal").textContent = "$" + fmtN(d.balance);
   document.getElementById("hEq").textContent = "$" + fmtN(d.equity);
+  if (d.equity !== undefined && equitySeries) {
+    const t = Math.floor(Date.now() / 1000);
+    if (t > lastEquityT) { lastEquityT = t; equitySeries.update({ time: t, value: d.equity }); }
+  }
   setHV("hPnl", m.total_pnl, "$" + fmtN(m.total_pnl));
+  setHV("hDay", d.daily_pnl, (d.daily_pnl >= 0 ? "+" : "") + "$" + fmtN(d.daily_pnl));
   document.getElementById("hWR").textContent = m.win_rate + "%";
   document.getElementById("hPF").textContent = m.profit_factor;
   setHV("hDD", m.max_drawdown, m.max_drawdown + "%");
