@@ -51,6 +51,7 @@ class ExchangeConfig(BaseSettings):
 
     # Mode
     dry_run: bool = Field(default=True, alias="DRY_RUN")
+    paper_balance_usdt: float = Field(default=10000.0, alias="PAPER_BALANCE_USDT")
 
     def get_exchange_list(self) -> list[str]:
         return [e.strip() for e in self.active_exchanges.split(",") if e.strip()]

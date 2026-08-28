@@ -114,13 +114,40 @@ class SignalProcessor:
 
         return {"ok": True}
 
+    def _get_equity(self) -> Optional[float]:
+        """Best-effort account equity in quote currency (USDT)."""
+        from exchanges.connector import ExchangeManager
+        ex = self.exchanges.get_exchange()
+        if not ex:
+            return None
+        try:
+            balance = ex.fetch_balance()
+            total = balance.get("total", {})
+            usdt = float(total.get("USDT", 0))
+            # include derivative wallet equity if present
+            if usdt == 0:
+                info_total = balance.get("info", {}).get("totalWalletBalance")
+                if info_total:
+                    usdt = float(info_total)
+            return usdt
+        except Exception:
+            return None
+
     def _check_risk(self, signal: dict) -> dict:
         if self.daily_trade_count >= self.config.max_daily_trades:
             return {"ok": False, "reason": f"max daily trades reached ({self.config.max_daily_trades})"}
 
         if signal.get("signal", "").lower() in ("buy", "sell"):
-            if abs(self.daily_pnl) >= self.config.max_daily_loss_pct:
-                return {"ok": False, "reason": f"max daily loss reached ({self.config.max_daily_loss_pct}%)"}
+            if self.daily_pnl < 0:
+                equity = self._get_equity()
+                if equity and equity > 0:
+                    dd_pct = abs(self.daily_pnl) / equity * 100
+                    if dd_pct >= self.config.max_daily_loss_pct:
+                        return {"ok": False,
+                                "reason": f"max daily loss reached ({dd_pct:.2f}% of equity, limit {self.config.max_daily_loss_pct}%)"}
+                elif abs(self.daily_pnl) >= self.config.max_daily_loss_pct:
+                    return {"ok": False,
+                            "reason": f"max daily loss reached in USDT ({abs(self.daily_pnl):.2f})"}
 
         return {"ok": True}
 
@@ -199,6 +226,10 @@ class SignalProcessor:
         )
 
     def _execute_exit(self, symbol, exchange_name, dry_run) -> dict:
+        if dry_run:
+            # Simulated exits don't touch the exchange — no live positions exist.
+            return {"status": "no_position", "symbol": symbol, "dry_run": True}
+
         ex = self.exchanges.get_exchange(exchange_name)
         if not ex:
             return {"error": f"exchange {exchange_name} not connected"}
@@ -208,15 +239,18 @@ class SignalProcessor:
             for p in positions:
                 if float(p.get("contracts", 0)) > 0:
                     if p["side"] == "long":
-                        return self.exchanges.close_long(symbol, exchange_name=exchange_name, dry_run=dry_run)
+                        return self.exchanges.close_long(symbol, exchange_name=exchange_name)
                     else:
-                        return self.exchanges.close_short(symbol, exchange_name=exchange_name, dry_run=dry_run)
+                        return self.exchanges.close_short(symbol, exchange_name=exchange_name)
         except Exception as e:
             return {"error": str(e)}
 
         return {"status": "no_position", "symbol": symbol}
 
     def _execute_halt(self, exchange_name) -> dict:
+        if self.config.dry_run:
+            return {"status": "halt_executed", "closed": 0, "dry_run": True, "details": []}
+
         results = []
         ex = self.exchanges.get_exchange(exchange_name)
         if not ex:
@@ -241,11 +275,14 @@ class SignalProcessor:
         return {"status": "halt_executed", "closed": len(results), "details": results}
 
     def _calc_size(self, symbol, price, sl, risk_pct, ex, exchange_name) -> Optional[float]:
-        try:
-            balance = ex.fetch_balance()
-            equity = float(balance.get("total", {}).get("USDT", 0))
-        except Exception:
-            return None
+        if self.config.dry_run:
+            equity = self.config.paper_balance_usdt
+        else:
+            try:
+                balance = ex.fetch_balance()
+                equity = float(balance.get("total", {}).get("USDT", 0))
+            except Exception:
+                return None
 
         if equity <= 0:
             return None

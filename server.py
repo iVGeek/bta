@@ -2110,6 +2110,7 @@ async def api_close(position_id: int):
 live_state = {"type": "update", "boot": True}
 last_candle_global = None  # last known candle, reused for quick post-mutation live_state rebuilds
 mtf_cache = {}  # symbol -> {"time": ts, "result": {...}}
+EQUITY_SAMPLE_LAST = 0.0  # last live equity-curve sampling timestamp
 
 def _refresh_live_state():
     """Immediately rebuild live_state (no network IO) after a state mutation, so
@@ -2268,7 +2269,7 @@ def _build_live_state(tickers, latest_candle):
 
 async def update_loop():
     """Background task: keeps live_state fresh so WebSocket + status are instant."""
-    global live_state, ticker_cache, last_candle_global
+    global live_state, ticker_cache, last_candle_global, EQUITY_SAMPLE_LAST
     while True:
         try:
             tickers = ticker_cache
@@ -2286,7 +2287,21 @@ async def update_loop():
                     })
                 trial.update_positions(tickers)
 
-            if closed:
+            # Live equity sampling (~30s) so the equity chart moves in real time,
+            # and the sampled curve survives restarts via state persistence.
+            sampled = False
+            if time.time() - EQUITY_SAMPLE_LAST > 30:
+                EQUITY_SAMPLE_LAST = time.time()
+                paper.equity_curve.append({"time": int(time.time()), "value": round(paper.equity, 2)})
+                if len(paper.equity_curve) > 10000:
+                    paper.equity_curve = paper.equity_curve[-10000:]
+                if trial.active:
+                    trial.equity_curve.append({"time": int(time.time()), "value": round(trial.equity, 2)})
+                    if len(trial.equity_curve) > 10000:
+                        trial.equity_curve = trial.equity_curve[-10000:]
+                sampled = True
+
+            if closed or sampled:
                 save_state()
 
             latest_candle = await asyncio.to_thread(
