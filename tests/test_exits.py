@@ -1,5 +1,6 @@
 """Deterministic unit tests for paper-engine SL exit + trailing stop logic."""
 import sys, os, math
+from datetime import date as _date
 sys.path.insert(0, "C:/iVGeek/trading-bot")
 os.chdir("C:/iVGeek/trading-bot")
 
@@ -117,6 +118,35 @@ check("daily loss: limit scales with equity (100k, -600 allowed)",
 # Trade-count cap still enforced independently of $ amount
 risk4 = RiskManager(); risk4.daily_trades = risk4.max_daily_trades
 check("daily trades cap enforced", not risk4.can_trade(eng)[0])
+
+# ── Max drawdown gate (unrealized equity vs peak) ─────────────────────────────
+risk5 = RiskManager(); risk5.peak_equity = 10000.0; risk5.daily_pnl = 0
+eng3 = PaperEngine(); eng3.balance = 10000.0; eng3.initial_balance = 10000.0
+# Place a losing paper position dragging equity from peak: (50-100)*40 = -2000
+# -> equity = balance + pnl = 10000 + (-2000) = 8000 -> 20% drawdown from peak 10000 (limit 15%)
+from server import PaperPosition as PP
+eng3.positions.append(PP("BTC/USDT", "long", 100.0, 40, sl=90.0, tp=120.0))
+eng3.positions[0].update(50.0, atr_val=1.0)  # updates pnl = (50-100)*40 = -2000
+check("drawdown: equity dropped", abs((10000.0 + eng3.positions[0].pnl) - 8000.0) < 0.01,
+      f"equity={10000.0 + eng3.positions[0].pnl}")
+ok, why = risk5.can_trade(eng3)
+check("max drawdown: 20% exceeds 15% gate", not ok, why)
+# Within 15% -> allowed
+risk6 = RiskManager(); risk6.peak_equity = 10000.0; risk6.daily_pnl = 0
+eng4 = PaperEngine(); eng4.balance = 10000.0; eng4.initial_balance = 10000.0
+eng4.positions.append(PP("BTC/USDT", "long", 100.0, 40, sl=90.0, tp=120.0))
+eng4.positions[0].update(97.0, atr_val=1.0)  # (97-100)*40 = -120 -> equity 9880 -> -1.2%
+ok, why = risk6.can_trade(eng4)
+check("max drawdown: 1.2% within gate allowed", ok, why)
+
+# ── Daily reset on calendar rollover ──────────────────────────────────────────
+from datetime import date
+risk7 = RiskManager(); risk7.daily_pnl = -900.0; risk7.daily_trades = 19
+risk7.last_reset = _date(2000, 1, 1)  # force "yesterday" -> rollover today resets counters
+risk7._check_daily_reset()
+check("daily reset: loss counter cleared", risk7.daily_pnl == 0.0, f"daily_pnl={risk7.daily_pnl}")
+check("daily reset: trade counter cleared", risk7.daily_trades == 0, f"daily_trades={risk7.daily_trades}")
+check("daily reset: date advanced", risk7.last_reset == _date.today())
 
 failed = [n for n, ok in R if not ok]
 print(f"\n=== {len(R) - len(failed)}/{len(R)} CHECKS PASSED ===")
