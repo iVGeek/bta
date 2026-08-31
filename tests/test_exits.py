@@ -3,7 +3,7 @@ import sys, os, math
 sys.path.insert(0, "C:/iVGeek/trading-bot")
 os.chdir("C:/iVGeek/trading-bot")
 
-from server import PaperPosition, TrailingStopManager, PaperEngine, risk_manager
+from server import PaperPosition, TrailingStopManager, PaperEngine, risk_manager, RiskManager
 
 R = []
 def check(name, cond, detail=""):
@@ -98,6 +98,25 @@ expected_bal = 10000.0 + (99.85 - 100.0) * 0.5
 check("cycle: balance credited", abs(paper2.balance - expected_bal) < 0.001, f"bal={paper2.balance}")
 check("cycle: position removed", len(paper2.positions) == 0)
 check("cycle: trade logged", len(paper2.trades) == 1)
+
+# ── Daily loss limit scales with equity (pct-of-equity, not fixed $) ──────────
+risk2 = RiskManager()
+eng = PaperEngine(); eng.balance = 10000.0; eng.initial_balance = 10000.0
+assert risk2._daily_loss_limit(eng) == -500.0, f"5% of 10k = -500, got {risk2._daily_loss_limit(eng)}"
+risk2.daily_pnl = -600.0  # 6% at 10k -> exceeds 5% limit
+ok, why = risk2.can_trade(eng)
+check("daily loss: 6% at 10k halts trading", not ok, why)
+risk2.daily_pnl = -400.0  # 4% at 10k -> allowed
+ok, why = risk2.can_trade(eng)
+check("daily loss: 4% at 10k allowed", ok)
+# At 10x the equity (100k), the same -600 is only 0.6% -> must still be allowed
+eng2 = PaperEngine(); eng2.balance = 100000.0; eng2.initial_balance = 100000.0
+risk3 = RiskManager(); risk3.daily_pnl = -600.0
+check("daily loss: limit scales with equity (100k, -600 allowed)",
+      risk3.can_trade(eng2)[0], f"limit={risk3._daily_loss_limit(eng2)}")
+# Trade-count cap still enforced independently of $ amount
+risk4 = RiskManager(); risk4.daily_trades = risk4.max_daily_trades
+check("daily trades cap enforced", not risk4.can_trade(eng)[0])
 
 failed = [n for n, ok in R if not ok]
 print(f"\n=== {len(R) - len(failed)}/{len(R)} CHECKS PASSED ===")

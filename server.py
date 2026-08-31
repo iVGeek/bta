@@ -460,7 +460,8 @@ class RiskManager:
     def __init__(self):
         self.daily_pnl = 0
         self.daily_trades = 0
-        self.max_daily_loss = -500
+        self.max_daily_loss = -500  # $ fallback floor (used if no equity available)
+        self.daily_loss_pct = 5.0   # % of equity per day (primary limit, scales with account)
         self.max_daily_trades = 20
         self.max_drawdown_pct = 15.0
         self.peak_equity = 10000.0
@@ -473,11 +474,21 @@ class RiskManager:
             self.daily_trades = 0
             self.last_reset = today
 
+    def _daily_loss_limit(self, paper_engine):
+        """Percentage-of-equity daily loss limit, falling back to a fixed $ floor."""
+        try:
+            eq = paper_engine.equity
+            if eq > 0:
+                return -eq * self.daily_loss_pct / 100
+        except Exception:
+            pass
+        return self.max_daily_loss
+
     def can_trade(self, paper_engine):
         self._check_daily_reset()
         if self.daily_trades >= self.max_daily_trades:
             return False, "Daily trade limit reached"
-        if self.daily_pnl <= self.max_daily_loss:
+        if self.daily_pnl <= self._daily_loss_limit(paper_engine):
             return False, "Daily loss limit hit"
         current_eq = paper_engine.equity
         if current_eq > self.peak_equity:
@@ -504,10 +515,15 @@ class RiskManager:
         self._check_daily_reset()
         eq = current_equity if current_equity is not None else self.peak_equity
         dd_pct = round((self.peak_equity - eq) / self.peak_equity * 100, 2) if self.peak_equity > 0 else 0
+        # Report the effective scaling limit (if we have a real engine to size against)
+        limit = self.max_daily_loss
+        if current_equity is not None and current_equity > 0:
+            limit = -current_equity * self.daily_loss_pct / 100
         return {
             "daily_pnl": round(self.daily_pnl, 2),
             "daily_trades": self.daily_trades,
-            "max_daily_loss": self.max_daily_loss,
+            "max_daily_loss": round(limit, 2),
+            "daily_loss_pct": self.daily_loss_pct,
             "max_daily_trades": self.max_daily_trades,
             "max_drawdown_pct": self.max_drawdown_pct,
             "drawdown_pct": dd_pct,
@@ -1338,6 +1354,7 @@ def _serialize_state():
         "risk": {
             "daily_pnl": risk_manager.daily_pnl, "daily_trades": risk_manager.daily_trades,
             "peak_equity": risk_manager.peak_equity, "last_reset": risk_manager.last_reset.isoformat(),
+            "daily_loss_pct": risk_manager.daily_loss_pct,
         },
         "trailing": {
             "enabled": trailing_manager.trailing_enabled,
@@ -1406,6 +1423,7 @@ def load_state():
         risk_manager.daily_pnl = float(r.get("daily_pnl", risk_manager.daily_pnl))
         risk_manager.daily_trades = int(r.get("daily_trades", risk_manager.daily_trades))
         risk_manager.peak_equity = float(r.get("peak_equity", risk_manager.peak_equity))
+        risk_manager.daily_loss_pct = float(r.get("daily_loss_pct", risk_manager.daily_loss_pct))
         lr = r.get("last_reset")
         if lr:
             try:
